@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>面接官AIフィードバック｜デモ</title>
+  <meta name="description" content="面接録画をAIが分析し、面接官のスキル向上をサポートするフィードバックシステムのデモ" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<div class="app-layout">
+  <!-- ===== Sidebar ===== -->
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <h2>🎯 Interview AI</h2>
+      <div class="logo-sub">面接官フィードバックシステム</div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-label">メイン</div>
+      <a class="nav-item active" data-page="dashboard" id="nav-dashboard">
+        <span class="icon">📊</span> ダッシュボード
+      </a>
+      <a class="nav-item" data-page="videos" id="nav-videos">
+        <span class="icon">🎬</span> 録画一覧
+        <span class="badge">3</span>
+      </a>
+      <a class="nav-item" data-page="agent" id="nav-agent">
+        <span class="icon">🤖</span> 自動評価エージェント
+      </a>
+      <a class="nav-item" data-page="feedback" id="nav-feedback">
+        <span class="icon">📝</span> FB詳細
+      </a>
+      <a class="nav-item" data-page="history" id="nav-history">
+        <span class="icon">📚</span> 履歴・トレンド
+      </a>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-section-label">システム</div>
+      <a class="nav-item" data-page="settings" id="nav-settings">
+        <span class="icon">⚙️</span> 設定
+      </a>
+    </div>
+
+
+    <div class="sidebar-footer">
+      <div class="version">v1.0 Demo ・ Powered by Gemini AI</div>
+    </div>
+  </nav>
+
+  <!-- ===== Main Content ===== -->
+  <main class="main-content">
+
+    <!-- ========== PAGE: Dashboard ========== -->
+    <div class="page active" id="page-dashboard">
+      <div class="page-header">
+        <div class="flex-between">
+          <div>
+            <h1>ダッシュボード</h1>
+            <div class="subtitle">面接録画の分析状況とスコア推移を一覧で確認</div>
+          </div>
+          <div class="flex gap-12 align-center" style="align-items: center;">
+            <span style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">グループ表示:</span>
+            <select id="dashboardGroupSelect" style="padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer; transition: all 0.2s;" onchange="handleDashboardGroupChange()">
+              <option value="all">全社</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="stats-grid">
+        <div class="stat-card cyan">
+          <div class="stat-label">分析済み録画</div>
+          <div class="stat-value">12</div>
+          <div class="stat-change up">↑ 3件 今週</div>
+        </div>
+        <div class="stat-card purple">
+          <div class="stat-label">平均スコア</div>
+          <div class="stat-value">11.0</div>
+          <div class="stat-change up">↑ +0.9 前月比</div>
+        </div>
+        <div class="stat-card green">
+          <div class="stat-label">最高判定</div>
+          <div class="stat-value">A</div>
+          <div class="stat-change up">直近3回中2回</div>
+        </div>
+        <div class="stat-card orange">
+          <div class="stat-label">未分析</div>
+          <div class="stat-value">3</div>
+          <div class="stat-change down">→ 要対応</div>
+        </div>
+      </div>
+
+      <div class="content-grid">
+        <!-- Score Trend Chart -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📈 スコア推移（直近12件）</div>
+            <button class="btn btn-sm btn-secondary">期間変更</button>
+          </div>
+          <div class="chart-area">
+            <canvas id="trendChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Recent Feedback -->
+        <div class="card" id="dashboard-recent-feedback-card">
+          <div class="card-header">
+            <div class="card-title">🕐 直近のフィードバック</div>
+          </div>
+          <div id="dashboard-recent-feedback-list">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">⚡ クイックアクション</div>
+        </div>
+        <div class="flex gap-12">
+          <button class="btn btn-primary" id="btnScan" onclick="simulateScan()">
+            🔍 Google Driveをスキャン
+          </button>
+          <button class="btn btn-secondary" onclick="navigateTo('videos')">
+            🎬 録画一覧を開く
+          </button>
+          <button class="btn btn-secondary" onclick="navigateTo('history')">
+            📚 履歴を確認
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== PAGE: Videos ========== -->
+    <div class="page" id="page-videos">
+      <div class="page-header">
+        <div class="flex-between">
+          <div>
+            <h1>録画一覧</h1>
+            <div class="subtitle">Google Driveフォルダ内の面接録画ファイル</div>
+          </div>
+          <div class="flex gap-8">
+            <button class="btn btn-primary" onclick="simulateScan()">🔍 スキャン</button>
+            <button class="btn btn-secondary" onclick="simulateAnalyzeAll()">🤖 一括分析</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dropzone on Videos List Page -->
+      <div class="import-dropzone mb-20" id="videos-import-dropzone" style="padding: 16px 20px;">
+        <div class="dropzone-content" style="flex-direction: row; gap: 12px; justify-content: center; align-items: center;">
+          <span class="dropzone-icon" style="font-size: 24px; margin-bottom: 0;">📥</span>
+          <div style="text-align: left;">
+            <p class="dropzone-text" style="margin: 0; font-size: 13px;">ここに面接動画や音声ファイルをドラッグ＆ドロップして録画一覧に追加</p>
+            <span class="dropzone-sub" style="font-size: 11px;">またはここをクリックしてファイルを選択 (.mp4, .mov, .m4v, .mp3, .wav)</span>
+          </div>
+          <input type="file" id="videos-file-input" style="display:none;" accept="video/*,audio/*">
+        </div>
+      </div>
+
+      <!-- Group Filter -->
+      <div class="flex gap-12 mb-16" style="align-items: center; margin-bottom: 16px; background: rgba(255, 255, 255, 0.02); padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border); width: fit-content;">
+        <span style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">グループフィルター:</span>
+        <select id="videoTableGroupFilter" style="padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer;" onchange="filterVideosTable()">
+          <option value="all">すべてのグループ</option>
+        </select>
+      </div>
+
+      <div class="card">
+        <table class="video-table">
+          <thead>
+            <tr>
+              <th>ファイル名</th>
+              <th>グループ</th>
+              <th>日時</th>
+              <th>時間</th>
+              <th>サイズ</th>
+              <th>ステータス</th>
+              <th>スコア</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="videoTableBody">
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ========== PAGE: Feedback Detail ========== -->
+    <div class="page" id="page-feedback">
+      <div class="page-header">
+        <div class="flex-between">
+          <div>
+            <h1 id="fbTitle">フィードバック詳細</h1>
+            <div class="subtitle" id="fbSubtitle">分析結果の詳細を確認</div>
+          </div>
+          <div class="flex gap-8">
+            <button class="btn btn-secondary">📄 PDFエクスポート</button>
+            <button class="btn btn-secondary" onclick="navigateTo('videos')">← 一覧に戻る</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Simulation Mode Warning Banner -->
+      <div id="fb-simulation-warning" class="mb-20" style="display:none; background:rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 12px 16px; color:#f59e0b; font-size:13px; line-height:1.5; align-items:center; gap:8px;">
+        <span style="font-size: 18px;">⚠️</span>
+        <div>
+          <strong>【シミュレーション表示中】</strong>
+          APIキーが設定されていないため、実際の音声解析は行わず、デモ用モックデータを表示しています。お持ちの動画で実際のAI分析を行うには、<strong>「設定」</strong>タブでGemini APIキーを入力してください。
+        </div>
+      </div>
+
+      <!-- Summary Bar -->
+      <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
+        <div class="stat-card cyan">
+          <div class="stat-label">総合スコア</div>
+          <div class="stat-value" id="fbTotalScore">13</div>
+          <div class="text-sm text-muted">/ 15点満点</div>
+        </div>
+        <div class="stat-card green">
+          <div class="stat-label">総合判定</div>
+          <div class="stat-value" id="fbGrade" style="color:var(--accent-green)">A</div>
+          <div class="text-sm text-muted" id="fbGradeLabel">模範的な面接</div>
+        </div>
+        <div class="stat-card purple">
+          <div class="stat-label">前回比</div>
+          <div class="stat-value">+4</div>
+          <div class="stat-change up">↑ 改善</div>
+        </div>
+      </div>
+
+      <div class="content-grid">
+        <!-- Radar Chart -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🎯 項目別スコア</div>
+          </div>
+          <div class="radar-container">
+            <canvas id="radarChart" width="320" height="320"></canvas>
+          </div>
+        </div>
+
+        <!-- Score Bars -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📊 項目別スコアバー</div>
+          </div>
+          <div id="scoreBars"></div>
+        </div>
+      </div>
+
+      <!-- Detailed Feedback Items -->
+      <div class="content-grid">
+        <div class="card">
+          <div class="feedback-section">
+            <div class="feedback-section-title">✅ 良かった点</div>
+            <div id="fbStrengths"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="feedback-section">
+            <div class="feedback-section-title">🔧 改善すべき点</div>
+            <div id="fbImprovements"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per-criteria Feedback -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">📋 項目別詳細フィードバック</div>
+        </div>
+        <div id="fbCriteriaDetail"></div>
+      </div>
+
+      <!-- Overall Comment -->
+      <div class="card mt-20">
+        <div class="card-header">
+          <div class="card-title">💬 AIコメント（総評）</div>
+        </div>
+        <div id="fbOverallComment" style="font-size:14px; line-height:1.8; color:var(--text-secondary);"></div>
+      </div>
+
+      <!-- Transcription Script -->
+      <div class="card mt-20">
+        <div class="card-header">
+          <div class="card-title">📝 録画の音声文字起こし</div>
+        </div>
+        <div class="script-container" id="fbTranscription" style="max-height: 400px; overflow-y: auto; padding: 15px; background: rgba(255, 255, 255, 0.01); border: 1px solid var(--border); border-radius: 8px;">
+          <!-- Dialogue bubble entries populated by js -->
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== PAGE: History ========== -->
+    <div class="page" id="page-history">
+      <div class="page-header">
+        <h1>履歴・トレンド</h1>
+        <div class="subtitle">過去のフィードバック結果を時系列で確認</div>
+      </div>
+
+      <div class="card mb-16">
+        <div class="card-header">
+          <div class="card-title">📈 項目別スコア推移</div>
+          <div class="flex gap-8">
+            <button class="btn btn-sm btn-secondary tab-btn active" onclick="switchHistoryChart(this,'all')">全項目</button>
+            <button class="btn btn-sm btn-secondary tab-btn" onclick="switchHistoryChart(this,'detail')">項目別</button>
+          </div>
+        </div>
+        <div class="chart-area" style="height:280px">
+          <canvas id="historyChart"></canvas>
+        </div>
+      </div>
+
+      <div class="content-grid">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📚 全履歴一覧</div>
+            <div class="text-sm text-muted">全12件</div>
+          </div>
+          <div id="historyList"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🏆 判定分布</div>
+          </div>
+          <div class="chart-area" style="height:220px">
+            <canvas id="gradeDistChart"></canvas>
+          </div>
+          <div class="mt-12" style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px; text-align:center;">
+            <div><span class="grade-badge A" style="width:32px;height:32px;font-size:14px;">A</span><div class="text-sm text-muted mt-12">4回</div></div>
+            <div><span class="grade-badge B" style="width:32px;height:32px;font-size:14px;">B</span><div class="text-sm text-muted mt-12">5回</div></div>
+            <div><span class="grade-badge C" style="width:32px;height:32px;font-size:14px;">C</span><div class="text-sm text-muted mt-12">2回</div></div>
+            <div><span class="grade-badge D" style="width:32px;height:32px;font-size:14px;">D</span><div class="text-sm text-muted mt-12">1回</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== PAGE: Settings ========== -->
+    <div class="page" id="page-settings">
+      <div class="page-header">
+        <h1>設定</h1>
+        <div class="subtitle">システム設定・API接続・評価基準のカスタマイズ</div>
+      </div>
+
+      <div class="content-grid">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🔗 Google Drive 連携</div>
+          </div>
+          <div class="score-bar-container">
+            <div class="score-bar-header">
+              <span class="score-bar-label" style="font-size:12px;color:var(--text-muted)">フォルダID</span>
+              <span class="status-badge done" style="font-size:10px">接続済み</span>
+            </div>
+            <input type="text" value="1AbCdEfGhIjKlMnOpQrStUvWxYz" readonly
+              style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-size:13px;font-family:monospace;margin-top:4px;">
+          </div>
+          <div class="score-bar-container mt-12">
+            <div class="score-bar-header">
+              <span class="score-bar-label" style="font-size:12px;color:var(--text-muted)">サービスアカウント</span>
+              <span class="status-badge done" style="font-size:10px">認証済み</span>
+            </div>
+            <input type="text" value="interview-ai@project.iam.gserviceaccount.com" readonly
+              style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-size:13px;font-family:monospace;margin-top:4px;">
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🤖 Gemini API</div>
+          </div>
+          <div class="score-bar-container">
+            <div class="score-bar-header">
+              <span class="score-bar-label" style="font-size:12px;color:var(--text-muted)">APIキー</span>
+              <span class="status-badge pending" id="api-key-status" style="font-size:10px">シミュレーション</span>
+            </div>
+            <input type="password" id="settings-api-key" placeholder="APIキーを入力 (AIzaSy...)" 
+              style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-size:13px;font-family:monospace;margin-top:4px;">
+          </div>
+          <div class="score-bar-container mt-12">
+            <div class="score-bar-header">
+              <span class="score-bar-label" style="font-size:12px;color:var(--text-muted)">使用モデル</span>
+            </div>
+            <select id="settings-model-select" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-size:13px;margin-top:4px;" onchange="updateModelSettingsText()">
+              <option value="gemini-2.5-pro" selected>Gemini 2.5 Pro（推奨・高精度文字起こし）</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash（高速・低コスト）</option>
+              <option value="gemini-1.5-pro">Gemini 1.5 Pro（前世代・安定）</option>
+            </select>
+          </div>
+          <div class="mt-12" id="model-cost-hint" style="background:var(--accent-cyan-dim);border-radius:8px;padding:12px;font-size:12px;color:var(--accent-cyan);">
+            💡 推定コスト: 30分動画1本あたり <strong>約120円</strong>（Gemini 2.5 Pro使用時）
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt-20">
+        <div class="card-header">
+          <div class="card-title">📏 評価基準カスタマイズ</div>
+          <button class="btn btn-sm btn-secondary">リセット</button>
+        </div>
+        <div id="criteriaSettings"></div>
+      </div>
+    </div>
+
+    <!-- ========== PAGE: Agent ========== -->
+    <div class="page" id="page-agent">
+      <div class="page-header">
+        <h1>自動評価エージェント (v2)</h1>
+        <div class="subtitle">設計書に基づいた6ノードのシーケンシャルパイプラインの動作デモ</div>
+      </div>
+
+      <!-- Pipeline Flow Diagram -->
+      <div class="card mb-20">
+        <div class="card-header">
+          <div class="card-title">⚙️ エージェントパイプライン・フロー</div>
+          <div class="status-badge pending" id="pipeline-status">待機中</div>
+        </div>
+        <div class="pipeline-flow-container">
+          <div class="pipeline-flow">
+            <div class="pipeline-node" id="node-1">
+              <div class="node-icon">📂</div>
+              <div class="node-name">Node 1: Drive Trigger</div>
+              <div class="node-status" id="node-1-status">待機中</div>
+            </div>
+            <div class="pipeline-arrow" id="arrow-1">➔</div>
+            <div class="pipeline-node" id="node-2">
+              <div class="node-icon">🎵</div>
+              <div class="node-name">Node 2: Audio Extractor</div>
+              <div class="node-status" id="node-2-status">待機中</div>
+            </div>
+            <div class="pipeline-arrow" id="arrow-2">➔</div>
+            <div class="pipeline-node" id="node-3">
+              <div class="node-icon">☁️</div>
+              <div class="node-name">Node 3: Gemini Uploader</div>
+              <div class="node-status" id="node-3-status">待機中</div>
+            </div>
+            <div class="pipeline-arrow" id="arrow-3">➔</div>
+            <div class="pipeline-node" id="node-4">
+              <div class="node-icon">📝</div>
+              <div class="node-name">Node 4: Gemini Transcriber</div>
+              <div class="node-status" id="node-4-status">待機中</div>
+            </div>
+            <div class="pipeline-arrow" id="arrow-4">➔</div>
+            <div class="pipeline-node" id="node-5">
+              <div class="node-icon">🧠</div>
+              <div class="node-name">Node 5: Gemini Evaluator</div>
+              <div class="node-status" id="node-5-status">待機中</div>
+            </div>
+            <div class="pipeline-arrow" id="arrow-5">➔</div>
+            <div class="pipeline-node" id="node-6">
+              <div class="node-icon">🔄</div>
+              <div class="node-name">Node 6: Data Transformer</div>
+              <div class="node-status" id="node-6-status">待機中</div>
+            </div>
+            <div class="pipeline-arrow" id="arrow-6">➔</div>
+            <div class="pipeline-node" id="node-7">
+              <div class="node-icon">📤</div>
+              <div class="node-name">Node 7: Output Connector</div>
+              <div class="node-status" id="node-7-status">待機中</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="content-grid">
+        <!-- Control Panel -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🕹️ コントロールパネル</div>
+          </div>
+          
+          <div class="agent-controls">
+            <!-- Drag and Drop Area -->
+            <div class="import-dropzone" id="import-dropzone">
+              <div class="dropzone-content">
+                <span class="dropzone-icon">📥</span>
+                <p class="dropzone-text">面接動画・音声ファイルをここにドラッグ＆ドロップ</p>
+                <span class="dropzone-sub">またはファイルを選択 (.mp4, .mov, .m4v, .mp3, .wav)</span>
+                <input type="file" id="agent-file-input" style="display:none;" accept="video/*,audio/*">
+              </div>
+            </div>
+
+            <div class="imported-file-info" id="imported-file-info" style="display:none;">
+              <div class="file-info-header">
+                <span class="info-icon">📄</span>
+                <div class="info-details">
+                  <div class="info-name" id="info-file-name">-</div>
+                  <div class="info-size" id="info-file-size">-</div>
+                </div>
+                <button class="btn-icon" onclick="clearImportedFile()">✕</button>
+              </div>
+            </div>
+            
+            <div class="mt-16" id="preset-selector-container">
+              <label class="score-bar-label" style="font-size:12px;color:var(--text-secondary)">またはデモ用プリセット動画を選択</label>
+              <select id="agent-video-select" onchange="selectPresetVideo(this.value)" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-size:13px;margin-top:4px;">
+                <option value="" selected disabled>プリセットを選択...</option>
+                <option value="sato">佐藤面接官_0417.mp4 (268 MB)</option>
+                <option value="takahashi">高橋面接官_0417.mp4 (231 MB)</option>
+                <option value="ito">伊藤面接官_0416.mp4 (312 MB)</option>
+              </select>
+            </div>
+            
+            <div style="margin-top: 12px; background: rgba(34, 211, 238, 0.05); border: 1px solid rgba(34, 211, 238, 0.15); border-radius: 8px; padding: 10px 12px; font-size: 11px; color: var(--accent-cyan); line-height: 1.5;">
+              💡 <strong>高速化のヒント</strong>:<br>
+              動画ファイル（.mp4など）はサイズが大きいため、アップロードやGemini側での音声処理に数分かかる場合があります。動画から音声（.mp3 や .wav など）を抽出してアップロードすると、処理が劇的に高速化（数十秒で完了）します。
+            </div>
+            
+            <div class="mt-16">
+              <label class="score-bar-label" style="font-size:12px;color:var(--text-secondary)">グループ名（任意）</label>
+              <input type="text" id="agent-group-input" placeholder="例: 新卒採用チーム" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-size:13px;margin-top:4px;transition: all 0.3s ease;">
+            </div>
+            
+            <div class="mt-16">
+              <label class="score-bar-label" style="font-size:12px;color:var(--text-secondary)">処理スピード</label>
+              <div class="flex gap-12 mt-8">
+                <label style="font-size:13px; display:inline-flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-speed" value="real" checked> リアル（疑似）</label>
+                <label style="font-size:13px; display:inline-flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-speed" value="fast"> 高速</label>
+              </div>
+            </div>
+
+            <div class="flex gap-12 mt-20">
+              <button class="btn btn-primary" id="btn-run-pipeline" onclick="startAgentPipeline()" disabled>
+                🚀 エージェント実行
+              </button>
+              <button class="btn btn-secondary" id="btn-reset-pipeline" onclick="resetAgentPipeline()" disabled>
+                ⟳ リセット
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Terminal Console -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">🖥️ 実行ログ（コンソール）</div>
+            <button class="btn btn-sm btn-secondary" onclick="clearConsole()">クリア</button>
+          </div>
+          <div class="console-box" id="agent-console">
+            <div class="console-line system">[SYSTEM] エージェントが初期化されました。実行ファイルを選択またはインポートしてください。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Real-time Connected Previews -->
+      <div class="card mt-20">
+        <div class="card-header">
+          <div class="card-title">📊 外部連携先リアルタイムプレビュー</div>
+        </div>
+        
+        <div class="tabs">
+          <div class="tab active" id="tab-sheets" onclick="switchPreviewTab('sheets')">🟢 Google Sheets (書き込み結果)</div>
+          <div class="tab" id="tab-drive" onclick="switchPreviewTab('drive')">📁 Google Drive (保存ファイル)</div>
+          <div class="tab" id="tab-slack" onclick="switchPreviewTab('slack')">💬 Slack (通知履歴)</div>
+        </div>
+
+        <!-- Spreadsheet Preview -->
+        <div class="preview-content active" id="preview-sheets">
+          <div style="overflow-x:auto;">
+            <table class="video-table" style="font-size:11px;">
+              <thead>
+                <tr>
+                  <th style="min-width:130px;">処理日時</th>
+                  <th>面接官名 / ファイル名</th>
+                  <th>グループ</th>
+                  <th>アイスブレイク・傾聴力</th>
+                  <th>質問・深掘り力</th>
+                  <th>アトラクト・構造化</th>
+                  <th>面接官の良かった点</th>
+                  <th>面接官の改善点</th>
+                  <th>総評</th>
+                </tr>
+              </thead>
+              <tbody id="preview-sheets-body">
+                <tr class="muted-row">
+                  <td>2026-04-15 14:30:22</td>
+                  <td>田中面接官_0415</td>
+                  <td>新卒採用チーム</td>
+                  <td>5</td>
+                  <td>5</td>
+                  <td>4</td>
+                  <td>・傾聴姿勢が良く、安心感を与えている...</td>
+                  <td>・会社説明で一方的に話しすぎている...</td>
+                  <td>全体として非常に質の高い面接対応です。傾聴と深掘りの...</td>
+                </tr>
+                <tr class="muted-row">
+                  <td>2026-04-12 10:02:11</td>
+                  <td>鈴木面接官_0412</td>
+                  <td>中途開発チーム</td>
+                  <td>4</td>
+                  <td>4</td>
+                  <td>3</td>
+                  <td>・的確な質問をテンポよく投げている...</td>
+                  <td>・応募者の返答に対する共感が薄い...</td>
+                  <td>基本的なスキルは備わっていますが、受容的態度に改善の...</td>
+                </tr>
+                <tr class="muted-row">
+                  <td>2026-04-10 16:01:45</td>
+                  <td>山田面接官_0410</td>
+                  <td>カスタマーサポートチーム</td>
+                  <td>3</td>
+                  <td>2</td>
+                  <td>3</td>
+                  <td>・丁寧な言葉遣いで対応できている...</td>
+                  <td>・深掘り質問が無く、表面的に終わる...</td>
+                  <td>質問設計と深掘りの技術についてトレーニングが必要です...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Drive Preview -->
+        <div class="preview-content" id="preview-drive" style="display:none;">
+          <div style="background:var(--bg-primary); padding:16px; border-radius:8px; border:1px solid var(--border);">
+            <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+              <span>📁 保存フォルダ: <strong>02_文字起こし・詳細レポート出力</strong></span>
+            </div>
+            <div id="preview-drive-files" class="flex flex-col gap-8">
+              <div class="drive-file-item">
+                <span class="file-icon">📄</span>
+                <span class="file-name">田中面接官_0415_文字起こし.txt</span>
+                <button class="btn btn-sm btn-secondary" onclick="viewDriveFileMock('tanaka')">表示</button>
+              </div>
+              <div class="drive-file-item">
+                <span class="file-icon">📄</span>
+                <span class="file-name">鈴木面接官_0412_文字起こし.txt</span>
+                <button class="btn btn-sm btn-secondary" onclick="viewDriveFileMock('suzuki')">表示</button>
+              </div>
+              <div class="drive-file-item">
+                <span class="file-icon">📄</span>
+                <span class="file-name">山田面接官_0410_文字起こし.txt</span>
+                <button class="btn btn-sm btn-secondary" onclick="viewDriveFileMock('yamada')">表示</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Slack Preview -->
+        <div class="preview-content" id="preview-slack" style="display:none;">
+          <div class="slack-channel-box">
+            <div class="slack-header"># hr-interview-notifications</div>
+            <div class="slack-messages" id="slack-messages-list">
+              <div class="slack-message">
+                <div class="slack-avatar">🤖</div>
+                <div class="slack-content">
+                  <div class="slack-user">Interview AI Agent <span class="slack-time">2026/04/15 14:31</span></div>
+                  <div class="slack-text">【面接官評価完了】<strong>田中面接官_0415</strong> の評価・格納が完了しました。スプレッドシートおよびDriveをご確認ください。</div>
+                </div>
+              </div>
+              <div class="slack-message">
+                <div class="slack-avatar">🤖</div>
+                <div class="slack-content">
+                  <div class="slack-user">Interview AI Agent <span class="slack-time">2026/04/12 10:03</span></div>
+                  <div class="slack-text">【面接官評価完了】<strong>鈴木面接官_0412</strong> の評価・格納が完了しました。スプレッドシートおよびDriveをご確認ください。</div>
+                </div>
+              </div>
+              <div class="slack-message">
+                <div class="slack-avatar">🤖</div>
+                <div class="slack-content">
+                  <div class="slack-user">Interview AI Agent <span class="slack-time">2026/04/10 16:02</span></div>
+                  <div class="slack-text">【面接官評価完了】<strong>山田面接官_0410</strong> の評価・格納が完了しました。スプレッドシートおよびDriveをご確認ください。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Simulation Confirmation Modal -->
+<div id="simulation-confirm-modal" class="modal-overlay">
+  <div class="modal" style="max-width: 480px; text-align: center;">
+    <div style="font-size: 40px; margin-bottom: 16px; animation: pulse-badge 2s infinite;">⚠️</div>
+    <div class="modal-title" style="margin-bottom: 12px; color: var(--accent-orange);">APIキーが設定されていません</div>
+    <p style="color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; margin-bottom: 24px; text-align: left;">
+      独自のファイルがインポートされていますが、<strong>Gemini APIキー</strong>が設定されていないため、実際の音声解析を行うことができません。<br><br>
+      このまま実行すると、実際の音声は解析されず、<strong>デモ用の模擬フィードバックデータ（固定内容）</strong>が表示されます。<br><br>
+      お持ちの動画・音声ファイルで実際の高精度AI分析を行うには、まず「設定」タブでAPIキーを設定してください。
+    </p>
+    <div class="flex gap-12" style="justify-content: center; gap: 12px;">
+      <button class="btn btn-secondary" onclick="goToSettingsFromModal()">⚙️ 設定画面へ</button>
+      <button class="btn btn-primary" onclick="proceedWithSimulationFromModal()" style="background: linear-gradient(135deg, var(--accent-orange), #f97316); color: #fff; border: none;">デモ用データで進める</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast">
+  <span class="toast-icon" id="toastIcon">✅</span>
+  <span id="toastMsg">完了しました</span>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
