@@ -347,29 +347,25 @@ const MOCK_FEEDBACKS = {
   }
 };
 
-const HISTORY_DATA = [
-  { key: 'tanaka', date:'2026/04/15', name:'田中面接官', score:14, grade:'A', group: '新卒採用チーム' },
-  { key: 'suzuki', date:'2026/04/12', name:'鈴木面接官', score:11, grade:'B', group: '中途開発チーム' },
-  { key: 'yamada', date:'2026/04/10', name:'山田面接官', score:8, grade:'C', group: 'カスタマーサポートチーム' },
-  { key: 'nakamura', date:'2026/04/05', name:'中村面接官', score:12, grade:'B', group: '新卒採用チーム' },
-  { key: 'kobayashi', date:'2026/04/01', name:'小林面接官', score:13, grade:'A', group: '中途開発チーム' },
-  { key: 'kato', date:'2026/03/28', name:'加藤面接官', score:10, grade:'B', group: '中途開発チーム' },
-  { key: 'yoshida', date:'2026/03/25', name:'吉田面接官', score:12, grade:'B', group: '中途開発チーム' },
-  { key: 'watanabe', date:'2026/03/20', name:'渡辺面接官', score:7, grade:'D', group: 'カスタマーサポートチーム' },
-  { key: 'matsumoto', date:'2026/03/15', name:'松本面接官', score:9, grade:'C', group: 'カスタマーサポートチーム' },
-  { key: 'inoue', date:'2026/03/10', name:'井上面接官', score:10, border:'none', grade:'B', group: 'カスタマーサポートチーム' },
-  { key: 'kimura', date:'2026/03/05', name:'木村面接官', score:14, grade:'A', group: '新卒採用チーム' },
-  { key: 'hayashi', date:'2026/03/01', name:'林面接官',   score:13, grade:'A', group: '中途開発チーム' }
-];
+let HISTORY_DATA = [];
+let VIDEOS_DATA = [];
 
-let VIDEOS_DATA = [
-  { key: 'tanaka', name: '田中面接官_0415.mp4', date: '2026/04/15', duration: '28分', size: '245 MB', status: 'done', grade: 'A', score: 14, isNew: false, hidden: false, group: '新卒採用チーム' },
-  { key: 'suzuki', name: '鈴木面接官_0412.mp4', date: '2026/04/12', duration: '32分', size: '310 MB', status: 'done', grade: 'B', score: 11, isNew: false, hidden: false, group: '中途開発チーム' },
-  { key: 'yamada', name: '山田面接官_0410.mp4', date: '2026/04/10', duration: '25分', size: '198 MB', status: 'done', grade: 'C', score: 8, isNew: false, hidden: false, group: 'カスタマーサポートチーム' },
-  { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
-  { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
-  { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
-];
+function saveStateToLocalStorage() {
+  try {
+    localStorage.setItem('interview_history_data', JSON.stringify(HISTORY_DATA));
+    localStorage.setItem('interview_videos_data', JSON.stringify(VIDEOS_DATA));
+    // Save only custom feedbacks (that were added dynamically by user and don't have isMock=true)
+    const customFeedbacks = {};
+    for (const k in MOCK_FEEDBACKS) {
+      if (MOCK_FEEDBACKS[k] && !MOCK_FEEDBACKS[k].isMock) {
+        customFeedbacks[k] = MOCK_FEEDBACKS[k];
+      }
+    }
+    localStorage.setItem('interview_custom_feedbacks', JSON.stringify(customFeedbacks));
+  } catch (e) {
+    console.error("Failed to save state to localStorage:", e);
+  }
+}
 
 // ===== Navigation =====
 function navigateTo(page) {
@@ -619,6 +615,8 @@ function simulateScan() {
     renderVideosTable();
     updateDashboardMetrics();
     showToast('✅', '3件の新規録画を検出しました！');
+    
+    saveStateToLocalStorage();
     
     // Update badge on sidebar nav-videos if present
     const badge = document.querySelector('#nav-videos .badge');
@@ -1918,6 +1916,8 @@ function integrateResultsIntoApp(candidateKey) {
     gradeDistChartInstance.data.datasets[0].data = [counts.A, counts.B, counts.C, counts.D];
     gradeDistChartInstance.update();
   }
+  
+  saveStateToLocalStorage();
 }
 
 function resetAgentPipeline() {
@@ -2361,6 +2361,7 @@ function handleVideosFileSelect(file) {
   }
   
   showToast('✅', `${file.name} を録画一覧に追加しました`);
+  saveStateToLocalStorage();
 }
 
 function setupApiKeyEvents() {
@@ -2432,8 +2433,52 @@ function updateModelSettingsText() {
 document.addEventListener('DOMContentLoaded', () => {
   // Tag all initial presets as mock data
   for (const key in MOCK_FEEDBACKS) {
-    MOCK_FEEDBACKS[key].isMock = true;
+    if (MOCK_FEEDBACKS[key]) {
+      MOCK_FEEDBACKS[key].isMock = true;
+    }
   }
+
+  // Load custom feedbacks from localStorage
+  try {
+    const savedFeedbacks = localStorage.getItem('interview_custom_feedbacks');
+    if (savedFeedbacks) {
+      const customFeedbacks = JSON.parse(savedFeedbacks);
+      Object.assign(MOCK_FEEDBACKS, customFeedbacks);
+    }
+  } catch (e) {
+    console.error("Failed to load custom feedbacks from localStorage:", e);
+  }
+
+  // Load HISTORY_DATA from localStorage
+  try {
+    const savedHistory = localStorage.getItem('interview_history_data');
+    if (savedHistory) {
+      HISTORY_DATA = JSON.parse(savedHistory);
+    } else {
+      HISTORY_DATA = [];
+    }
+  } catch (e) {
+    HISTORY_DATA = [];
+  }
+
+  // Load VIDEOS_DATA from localStorage
+  const PRESET_VIDEOS = [
+    { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
+    { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
+    { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
+  ];
+
+  try {
+    const savedVideos = localStorage.getItem('interview_videos_data');
+    if (savedVideos) {
+      VIDEOS_DATA = JSON.parse(savedVideos);
+    } else {
+      VIDEOS_DATA = [...PRESET_VIDEOS];
+    }
+  } catch (e) {
+    VIDEOS_DATA = [...PRESET_VIDEOS];
+  }
+
   updateGroupDropdowns();
   initTrendChart();
   initHistoryChart();
