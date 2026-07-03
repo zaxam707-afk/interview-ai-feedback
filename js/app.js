@@ -408,6 +408,14 @@ function setupFirestoreRealtimeSync() {
     });
     
     if (loadedVideos.length > 0) {
+      // Preserve local fileObjects in memory
+      loadedVideos.forEach(lv => {
+        const existing = VIDEOS_DATA.find(v => v.key === lv.key);
+        if (existing && existing.fileObject) {
+          lv.fileObject = existing.fileObject;
+        }
+      });
+
       const PRESET_VIDEOS = [
         { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
         { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
@@ -1498,8 +1506,8 @@ async function runPipelineStep(apiKey, isFast) {
       logToConsole('cmd', '> python drive_trigger.py --folder_id 1AbCdEfGhIjKlMnOpQrStUvWxYz');
       logToConsole('info', '[INFO] Google Drive フォルダのスキャンを開始します...');
       
-      const fileName = importedFile ? importedFile.name : MOCK_FEEDBACKS[selectedPresetKey].title;
-      const fileSize = importedFile ? formatBytes(importedFile.size) : MOCK_FEEDBACKS[selectedPresetKey].subtitle.split(' ・ ')[2];
+      const fileName = importedFile ? importedFile.name : (MOCK_FEEDBACKS[selectedPresetKey] ? MOCK_FEEDBACKS[selectedPresetKey].title : "不明なファイル");
+      const fileSize = importedFile ? formatBytes(importedFile.size) : (MOCK_FEEDBACKS[selectedPresetKey] && MOCK_FEEDBACKS[selectedPresetKey].subtitle ? MOCK_FEEDBACKS[selectedPresetKey].subtitle.split(' ・ ')[2] : "—");
       
       setTimeout(() => {
         logToConsole('success', `[SUCCESS] 新しいファイルを検出しました: ${fileName} (サイズ: ${fileSize})`);
@@ -1509,7 +1517,7 @@ async function runPipelineStep(apiKey, isFast) {
       
     } else if (pipelineStepIndex === 2) {
       duration = isFast ? 600 : 3000;
-      const srcName = importedFile ? importedFile.name : MOCK_FEEDBACKS[selectedPresetKey].title;
+      const srcName = importedFile ? importedFile.name : (MOCK_FEEDBACKS[selectedPresetKey] ? MOCK_FEEDBACKS[selectedPresetKey].title : "不明なファイル");
       const destName = srcName.replace(/\.[^/.]+$/, "") + '.mp3';
       
       logToConsole('cmd', `> ffmpeg -i "${srcName}" -q:a 0 -map a "${destName}" -y`);
@@ -1528,7 +1536,7 @@ async function runPipelineStep(apiKey, isFast) {
       }, duration);
       
     } else if (pipelineStepIndex === 3) {
-      const srcName = importedFile ? importedFile.name : MOCK_FEEDBACKS[selectedPresetKey].title;
+      const srcName = importedFile ? importedFile.name : (MOCK_FEEDBACKS[selectedPresetKey] ? MOCK_FEEDBACKS[selectedPresetKey].title : "不明なファイル");
       const destName = srcName.replace(/\.[^/.]+$/, "") + '.mp3';
       
       if (apiKey && importedFile) {
