@@ -408,10 +408,10 @@ function setupFirestoreRealtimeSync() {
     });
     
     if (loadedVideos.length > 0) {
-      // Preserve local fileObjects in memory
+      // Preserve local fileObjects in memory (only if they are valid File instances)
       loadedVideos.forEach(lv => {
         const existing = VIDEOS_DATA.find(v => v.key === lv.key);
-        if (existing && existing.fileObject) {
+        if (existing && existing.fileObject && existing.fileObject instanceof File) {
           lv.fileObject = existing.fileObject;
         }
       });
@@ -771,7 +771,7 @@ function simulateAnalyzeSingle(btn) {
   }
 
   // Pre-select the file on the Agent page
-  if (video.fileObject) {
+  if (video.fileObject && video.fileObject instanceof File) {
     // If it's a custom file, set it as the imported file
     handleFileSelect(video.fileObject);
   } else {
@@ -2664,6 +2664,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const savedVideos = localStorage.getItem('interview_videos_data');
     if (savedVideos) {
       VIDEOS_DATA = JSON.parse(savedVideos);
+      // Delete any serialized junk {} objects that are not actual File objects
+      VIDEOS_DATA.forEach(v => {
+        if (v.fileObject && !(v.fileObject instanceof File)) {
+          delete v.fileObject;
+        }
+      });
     } else {
       VIDEOS_DATA = [...PRESET_VIDEOS];
     }
