@@ -349,6 +349,7 @@ const MOCK_FEEDBACKS = {
 
 let HISTORY_DATA = [];
 let VIDEOS_DATA = [];
+let firebaseDb = null;
 
 function saveStateToLocalStorage() {
   try {
@@ -362,8 +363,76 @@ function saveStateToLocalStorage() {
       }
     }
     localStorage.setItem('interview_custom_feedbacks', JSON.stringify(customFeedbacks));
+
+    if (firebaseDb) {
+      // Save videos to collection "videos"
+      VIDEOS_DATA.forEach(v => {
+        const docData = { ...v };
+        delete docData.fileObject;
+        firebaseDb.collection("videos").doc(v.key).set(docData)
+          .catch(err => console.error("Error saving video doc:", err));
+      });
+      // Save custom feedbacks to collection "feedbacks"
+      for (const k in customFeedbacks) {
+        if (customFeedbacks[k]) {
+          firebaseDb.collection("feedbacks").doc(k).set(customFeedbacks[k])
+            .catch(err => console.error("Error saving feedback doc:", err));
+        }
+      }
+    }
   } catch (e) {
-    console.error("Failed to save state to localStorage:", e);
+    console.error("Failed to save state:", e);
+  }
+}
+
+async function loadDataFromFirestore() {
+  if (!firebaseDb) return false;
+  try {
+    const videosSnapshot = await firebaseDb.collection("videos").get();
+    let loadedVideos = [];
+    videosSnapshot.forEach(doc => {
+      loadedVideos.push(doc.data());
+    });
+    
+    const feedbacksSnapshot = await firebaseDb.collection("feedbacks").get();
+    let loadedFeedbacks = {};
+    feedbacksSnapshot.forEach(doc => {
+      loadedFeedbacks[doc.id] = doc.data();
+    });
+    
+    if (loadedVideos.length > 0) {
+      const PRESET_VIDEOS = [
+        { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
+        { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
+        { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
+      ];
+      
+      const presetsToAppend = PRESET_VIDEOS.filter(p => !loadedVideos.some(lv => lv.key === p.key));
+      VIDEOS_DATA = [...loadedVideos, ...presetsToAppend];
+    } else {
+      VIDEOS_DATA = [
+        { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
+        { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
+        { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
+      ];
+    }
+    
+    Object.assign(MOCK_FEEDBACKS, loadedFeedbacks);
+    
+    HISTORY_DATA = VIDEOS_DATA.filter(v => v.status === 'done').map(v => ({
+      key: v.key,
+      date: v.date,
+      name: extractCandidateName(v.name) + '面接官',
+      score: v.score,
+      grade: v.grade,
+      group: v.group
+    }));
+    
+    HISTORY_DATA.sort((a, b) => new Date(b.date) - new Date(a.date));
+    return true;
+  } catch (e) {
+    console.error("Failed to load data from Firestore:", e);
+    return false;
   }
 }
 
@@ -2368,6 +2437,8 @@ function setupApiKeyEvents() {
   const apiKeyInput = document.getElementById('settings-api-key');
   const apiKeyStatus = document.getElementById('api-key-status');
   const modelSelect = document.getElementById('settings-model-select');
+  const firebaseConfigInput = document.getElementById('settings-firebase-config');
+  const firebaseStatus = document.getElementById('firebase-status');
   
   // Load settings on initialization
   if (apiKeyInput) {
@@ -2381,6 +2452,12 @@ function setupApiKeyEvents() {
     if (savedModel) {
       modelSelect.value = savedModel;
       updateModelSettingsText();
+    }
+  }
+  if (firebaseConfigInput) {
+    const savedConfig = localStorage.getItem('gemini_firebase_config');
+    if (savedConfig) {
+      firebaseConfigInput.value = savedConfig;
     }
   }
   
@@ -2407,6 +2484,41 @@ function setupApiKeyEvents() {
       localStorage.setItem('gemini_model_select', modelSelect.value);
     });
   }
+
+  if (firebaseConfigInput) {
+    const checkFirebaseStatus = () => {
+      const val = firebaseConfigInput.value.trim();
+      if (val) {
+        try {
+          JSON.parse(val);
+          localStorage.setItem('gemini_firebase_config', val);
+          if (firebaseStatus) {
+            firebaseStatus.textContent = '接続設定保存完了（再読込で接続）';
+            firebaseStatus.className = 'status-badge done';
+          }
+        } catch (e) {
+          if (firebaseStatus) {
+            firebaseStatus.textContent = '無効なJSON形式です';
+            firebaseStatus.className = 'status-badge pending';
+          }
+        }
+      } else {
+        localStorage.removeItem('gemini_firebase_config');
+        if (firebaseStatus) {
+          firebaseStatus.textContent = '未接続（ローカル保存）';
+          firebaseStatus.className = 'status-badge pending';
+        }
+      }
+    };
+    firebaseConfigInput.addEventListener('input', checkFirebaseStatus);
+    // Initial status check
+    if (firebaseDb && firebaseStatus) {
+      firebaseStatus.textContent = '接続完了（クラウド同期中）';
+      firebaseStatus.className = 'status-badge done';
+    } else {
+      checkFirebaseStatus();
+    }
+  }
 }
 
 function switchHistoryChart(btn, type) {
@@ -2430,7 +2542,7 @@ function updateModelSettingsText() {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   // Tag all initial presets as mock data
   for (const key in MOCK_FEEDBACKS) {
     if (MOCK_FEEDBACKS[key]) {
@@ -2477,6 +2589,37 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   } catch (e) {
     VIDEOS_DATA = [...PRESET_VIDEOS];
+  }
+
+  // Initialize Firebase if config is saved
+  try {
+    const savedConfig = localStorage.getItem('gemini_firebase_config');
+    if (savedConfig) {
+      const config = JSON.parse(savedConfig);
+      if (firebase.apps.length === 0) {
+        firebase.initializeApp(config);
+      }
+      firebaseDb = firebase.firestore();
+      
+      const firebaseStatus = document.getElementById('firebase-status');
+      if (firebaseStatus) {
+        firebaseStatus.textContent = '接続完了（同期中...）';
+        firebaseStatus.className = 'status-badge done';
+      }
+      
+      // Load shared data from Firestore (overwriting local fallback)
+      const success = await loadDataFromFirestore();
+      if (success && firebaseStatus) {
+        firebaseStatus.textContent = '接続完了（クラウド同期完了）';
+      }
+    }
+  } catch (e) {
+    console.error("Failed to initialize Firebase:", e);
+    const firebaseStatus = document.getElementById('firebase-status');
+    if (firebaseStatus) {
+      firebaseStatus.textContent = '接続エラー';
+      firebaseStatus.className = 'status-badge pending';
+    }
   }
 
   updateGroupDropdowns();
