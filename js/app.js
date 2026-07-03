@@ -2508,6 +2508,16 @@ function setupApiKeyEvents() {
     const savedConfig = localStorage.getItem('gemini_firebase_config');
     if (savedConfig) {
       firebaseConfigInput.value = savedConfig;
+    } else {
+      const defaultConfig = {
+        apiKey: "AIzaSyDObpH4ht2ky2BOXMFKnKezX3L6izKPicg",
+        authDomain: "interview-feedback-team.firebaseapp.com",
+        projectId: "interview-feedback-team",
+        storageBucket: "interview-feedback-team.firebasestorage.app",
+        messagingSenderId: "116272718812",
+        appId: "1:116272718812:web:dd78b59c9404bfa5fbe519"
+      };
+      firebaseConfigInput.value = JSON.stringify(defaultConfig, null, 2);
     }
   }
   
@@ -2643,8 +2653,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Initialize Firebase if config is saved
   try {
-    const savedConfig = localStorage.getItem('gemini_firebase_config');
+    let savedConfig = localStorage.getItem('gemini_firebase_config');
     const globalSyncBadge = document.getElementById('global-sync-badge');
+    
+    if (!savedConfig) {
+      // Default fallback config for automatic connection out of the box
+      const defaultConfig = {
+        apiKey: "AIzaSyDObpH4ht2ky2BOXMFKnKezX3L6izKPicg",
+        authDomain: "interview-feedback-team.firebaseapp.com",
+        projectId: "interview-feedback-team",
+        storageBucket: "interview-feedback-team.firebasestorage.app",
+        messagingSenderId: "116272718812",
+        appId: "1:116272718812:web:dd78b59c9404bfa5fbe519"
+      };
+      savedConfig = JSON.stringify(defaultConfig);
+    }
     
     if (savedConfig) {
       const config = JSON.parse(savedConfig);
