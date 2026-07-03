@@ -63,6 +63,7 @@
             <div class="subtitle">面接録画の分析状況とスコア推移を一覧で確認</div>
           </div>
           <div class="flex gap-12 align-center" style="align-items: center;">
+            <span id="global-sync-badge" class="status-badge pending" style="font-size: 11px; margin-right: 8px; padding: 4px 8px; display: inline-flex; align-items: center; gap: 4px;">⚪ ローカル保存</span>
             <span style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">グループ表示:</span>
             <select id="dashboardGroupSelect" style="padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-primary); font-size: 13px; cursor: pointer; transition: all 0.2s;" onchange="handleDashboardGroupChange()">
               <option value="all">全社</option>

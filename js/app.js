@@ -385,19 +385,26 @@ function saveStateToLocalStorage() {
   }
 }
 
-async function loadDataFromFirestore() {
-  if (!firebaseDb) return false;
-  try {
-    const videosSnapshot = await firebaseDb.collection("videos").get();
+function setupFirestoreRealtimeSync() {
+  if (!firebaseDb) return;
+  
+  const firebaseStatus = document.getElementById('firebase-status');
+  const globalSyncBadge = document.getElementById('global-sync-badge');
+  
+  if (firebaseStatus) {
+    firebaseStatus.textContent = '接続完了（クラウド同期中）';
+    firebaseStatus.className = 'status-badge done';
+  }
+  if (globalSyncBadge) {
+    globalSyncBadge.textContent = '🟢 クラウド同期中';
+    globalSyncBadge.className = 'status-badge done';
+  }
+  
+  // Real-time listener for videos
+  firebaseDb.collection("videos").onSnapshot(snapshot => {
     let loadedVideos = [];
-    videosSnapshot.forEach(doc => {
+    snapshot.forEach(doc => {
       loadedVideos.push(doc.data());
-    });
-    
-    const feedbacksSnapshot = await firebaseDb.collection("feedbacks").get();
-    let loadedFeedbacks = {};
-    feedbacksSnapshot.forEach(doc => {
-      loadedFeedbacks[doc.id] = doc.data();
     });
     
     if (loadedVideos.length > 0) {
@@ -410,6 +417,7 @@ async function loadDataFromFirestore() {
       const presetsToAppend = PRESET_VIDEOS.filter(p => !loadedVideos.some(lv => lv.key === p.key));
       VIDEOS_DATA = [...loadedVideos, ...presetsToAppend];
     } else {
+      // If Firestore is connected but empty, use presets
       VIDEOS_DATA = [
         { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
         { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
@@ -417,8 +425,7 @@ async function loadDataFromFirestore() {
       ];
     }
     
-    Object.assign(MOCK_FEEDBACKS, loadedFeedbacks);
-    
+    // Rebuild HISTORY_DATA
     HISTORY_DATA = VIDEOS_DATA.filter(v => v.status === 'done').map(v => ({
       key: v.key,
       date: v.date,
@@ -427,13 +434,30 @@ async function loadDataFromFirestore() {
       grade: v.grade,
       group: v.group
     }));
-    
     HISTORY_DATA.sort((a, b) => new Date(b.date) - new Date(a.date));
-    return true;
-  } catch (e) {
-    console.error("Failed to load data from Firestore:", e);
-    return false;
-  }
+    
+    // Re-render UI components dynamically
+    updateGroupDropdowns();
+    if (document.getElementById('trendChart')) initTrendChart();
+    if (document.getElementById('historyChart')) initHistoryChart();
+    if (document.getElementById('gradeDistChart')) initGradeDistChart();
+    renderHistoryList();
+    renderVideosTable();
+    updateDashboardMetrics();
+  }, err => {
+    console.error("Firestore videos snapshot error:", err);
+  });
+  
+  // Real-time listener for feedbacks
+  firebaseDb.collection("feedbacks").onSnapshot(snapshot => {
+    let loadedFeedbacks = {};
+    snapshot.forEach(doc => {
+      loadedFeedbacks[doc.id] = doc.data();
+    });
+    Object.assign(MOCK_FEEDBACKS, loadedFeedbacks);
+  }, err => {
+    console.error("Firestore feedbacks snapshot error:", err);
+  });
 }
 
 // ===== Navigation =====
@@ -547,13 +571,18 @@ let trendChartInstance, radarChartInstance, historyChartInstance, gradeDistChart
 
 function initTrendChart() {
   const ctx = document.getElementById('trendChart').getContext('2d');
+  if (trendChartInstance) trendChartInstance.destroy();
+
+  // Limit to latest 10 entries for clean visualization
+  const recentHistory = HISTORY_DATA.slice(0, 10).reverse();
+
   trendChartInstance = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: HISTORY_DATA.map(h => h.date.slice(5)).reverse(),
+      labels: recentHistory.map(h => h.date.slice(5)),
       datasets: [{
         label: '総合スコア',
-        data: HISTORY_DATA.map(h => h.score).reverse(),
+        data: recentHistory.map(h => h.score),
         borderColor: '#22d3ee',
         backgroundColor: 'rgba(34,211,238,0.1)',
         fill: true, tension: 0.4, pointRadius: 5,
@@ -606,17 +635,22 @@ function renderRadarChart(scores) {
 
 function initHistoryChart() {
   const ctx = document.getElementById('historyChart').getContext('2d');
+  if (historyChartInstance) historyChartInstance.destroy();
+
+  // Limit to latest 10 entries for bar chart as well
+  const recentHistory = HISTORY_DATA.slice(0, 10).reverse();
+
   historyChartInstance = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: HISTORY_DATA.map(h => h.name).reverse(),
+      labels: recentHistory.map(h => h.name),
       datasets: [{
         label: 'スコア',
-        data: HISTORY_DATA.map(h => h.score).reverse(),
-        backgroundColor: HISTORY_DATA.map(h => {
+        data: recentHistory.map(h => h.score),
+        backgroundColor: recentHistory.map(h => {
           const colors = { A:'rgba(52,211,153,0.6)', B:'rgba(59,130,246,0.6)', C:'rgba(245,158,11,0.6)', D:'rgba(239,68,68,0.6)' };
           return colors[h.grade];
-        }).reverse(),
+        }),
         borderRadius: 6, borderSkipped: false
       }]
     },
@@ -633,11 +667,26 @@ function initHistoryChart() {
 
 function initGradeDistChart() {
   const ctx = document.getElementById('gradeDistChart').getContext('2d');
+  if (gradeDistChartInstance) gradeDistChartInstance.destroy();
+
+  // Calculate grade distribution dynamically from HISTORY_DATA
+  const counts = { A: 0, B: 0, C: 0, D: 0 };
+  HISTORY_DATA.forEach(h => {
+    if (counts[h.grade] !== undefined) {
+      counts[h.grade]++;
+    }
+  });
+
   gradeDistChartInstance = new Chart(ctx, {
     type: 'doughnut',
     data: {
       labels: ['A（模範的）','B（良好）','C（改善要）','D（要トレーニング）'],
-      datasets: [{ data: [4,5,2,1], backgroundColor: ['#34d399','#3b82f6','#f59e0b','#ef4444'], borderWidth: 0, spacing: 4 }]
+      datasets: [{
+        data: [counts.A, counts.B, counts.C, counts.D],
+        backgroundColor: ['#34d399','#3b82f6','#f59e0b','#ef4444'],
+        borderWidth: 0,
+        spacing: 4
+      }]
     },
     options: {
       responsive: true, maintainAspectRatio: false, cutout: '65%',
@@ -2212,6 +2261,7 @@ function changeVideoGroup(key, newGroup) {
     updateGroupDropdowns();
     updateDashboardMetrics();
     renderVideosTable();
+    saveStateToLocalStorage();
   }
 }
 
@@ -2594,6 +2644,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Initialize Firebase if config is saved
   try {
     const savedConfig = localStorage.getItem('gemini_firebase_config');
+    const globalSyncBadge = document.getElementById('global-sync-badge');
+    
     if (savedConfig) {
       const config = JSON.parse(savedConfig);
       if (firebase.apps.length === 0) {
@@ -2601,24 +2653,25 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       firebaseDb = firebase.firestore();
       
-      const firebaseStatus = document.getElementById('firebase-status');
-      if (firebaseStatus) {
-        firebaseStatus.textContent = '接続完了（同期中...）';
-        firebaseStatus.className = 'status-badge done';
-      }
-      
-      // Load shared data from Firestore (overwriting local fallback)
-      const success = await loadDataFromFirestore();
-      if (success && firebaseStatus) {
-        firebaseStatus.textContent = '接続完了（クラウド同期完了）';
+      // Setup real-time listeners (this will automatically fetch and render updates)
+      setupFirestoreRealtimeSync();
+    } else {
+      if (globalSyncBadge) {
+        globalSyncBadge.textContent = '⚪ ローカル保存';
+        globalSyncBadge.className = 'status-badge pending';
       }
     }
   } catch (e) {
     console.error("Failed to initialize Firebase:", e);
     const firebaseStatus = document.getElementById('firebase-status');
+    const globalSyncBadge = document.getElementById('global-sync-badge');
     if (firebaseStatus) {
       firebaseStatus.textContent = '接続エラー';
       firebaseStatus.className = 'status-badge pending';
+    }
+    if (globalSyncBadge) {
+      globalSyncBadge.textContent = '🔴 接続エラー';
+      globalSyncBadge.className = 'status-badge pending';
     }
   }
 
