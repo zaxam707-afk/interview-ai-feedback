@@ -402,67 +402,80 @@ function setupFirestoreRealtimeSync() {
   
   // Real-time listener for videos
   firebaseDb.collection("videos").onSnapshot(snapshot => {
-    let loadedVideos = [];
-    snapshot.forEach(doc => {
-      loadedVideos.push(doc.data());
-    });
-    
-    if (loadedVideos.length > 0) {
-      // Preserve local fileObjects in memory (only if they are valid File instances)
-      loadedVideos.forEach(lv => {
-        const existing = VIDEOS_DATA.find(v => v.key === lv.key);
-        if (existing && existing.fileObject && existing.fileObject instanceof File) {
-          lv.fileObject = existing.fileObject;
-        }
+    try {
+      let loadedVideos = [];
+      snapshot.forEach(doc => {
+        loadedVideos.push(doc.data());
       });
-
-      const PRESET_VIDEOS = [
-        { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
-        { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
-        { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
-      ];
       
-      const presetsToAppend = PRESET_VIDEOS.filter(p => !loadedVideos.some(lv => lv.key === p.key));
-      VIDEOS_DATA = [...loadedVideos, ...presetsToAppend];
-    } else {
-      // If Firestore is connected but empty, use presets
-      VIDEOS_DATA = [
-        { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
-        { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
-        { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
-      ];
+      if (loadedVideos.length > 0) {
+        // Preserve local fileObjects in memory (only if they are valid File instances)
+        loadedVideos.forEach(lv => {
+          const existing = VIDEOS_DATA.find(v => v.key === lv.key);
+          if (existing && existing.fileObject && existing.fileObject instanceof File) {
+            lv.fileObject = existing.fileObject;
+          }
+        });
+
+        const PRESET_VIDEOS = [
+          { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
+          { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
+          { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
+        ];
+        
+        const presetsToAppend = PRESET_VIDEOS.filter(p => !loadedVideos.some(lv => lv.key === p.key));
+        VIDEOS_DATA = [...loadedVideos, ...presetsToAppend];
+      } else {
+        // If Firestore is connected but empty, use presets
+        VIDEOS_DATA = [
+          { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
+          { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
+          { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
+        ];
+      }
+      
+      // Rebuild HISTORY_DATA (safeguarding missing properties)
+      HISTORY_DATA = VIDEOS_DATA.filter(v => v.status === 'done').map(v => ({
+        key: v.key,
+        date: v.date || new Date().toLocaleDateString('ja-JP'),
+        name: (v.name ? extractCandidateName(v.name) : '不明な候補者') + '面接官',
+        score: v.score || 0,
+        grade: v.grade || 'C',
+        group: v.group || 'その他'
+      }));
+      
+      HISTORY_DATA.sort((a, b) => {
+        const dateA = new Date(a.date);
+        const dateB = new Date(b.date);
+        return (isNaN(dateB) ? 0 : dateB) - (isNaN(dateA) ? 0 : dateA);
+      });
+      
+      // Re-render UI components dynamically
+      updateGroupDropdowns();
+      if (document.getElementById('trendChart')) initTrendChart();
+      if (document.getElementById('historyChart')) initHistoryChart();
+      if (document.getElementById('gradeDistChart')) initGradeDistChart();
+      renderHistoryList();
+      renderVideosTable();
+      updateDashboardMetrics();
+    } catch (err) {
+      console.error("Error in Firestore videos onSnapshot callback:", err);
     }
-    
-    // Rebuild HISTORY_DATA
-    HISTORY_DATA = VIDEOS_DATA.filter(v => v.status === 'done').map(v => ({
-      key: v.key,
-      date: v.date,
-      name: extractCandidateName(v.name) + '面接官',
-      score: v.score,
-      grade: v.grade,
-      group: v.group
-    }));
-    HISTORY_DATA.sort((a, b) => new Date(b.date) - new Date(a.date));
-    
-    // Re-render UI components dynamically
-    updateGroupDropdowns();
-    if (document.getElementById('trendChart')) initTrendChart();
-    if (document.getElementById('historyChart')) initHistoryChart();
-    if (document.getElementById('gradeDistChart')) initGradeDistChart();
-    renderHistoryList();
-    renderVideosTable();
-    updateDashboardMetrics();
   }, err => {
     console.error("Firestore videos snapshot error:", err);
   });
   
   // Real-time listener for feedbacks
   firebaseDb.collection("feedbacks").onSnapshot(snapshot => {
-    let loadedFeedbacks = {};
-    snapshot.forEach(doc => {
-      loadedFeedbacks[doc.id] = doc.data();
-    });
-    Object.assign(MOCK_FEEDBACKS, loadedFeedbacks);
+    try {
+      let loadedFeedbacks = {};
+      snapshot.forEach(doc => {
+        loadedFeedbacks[doc.id] = doc.data();
+      });
+      Object.assign(MOCK_FEEDBACKS, loadedFeedbacks);
+    } catch (err) {
+      console.error("Error in Firestore feedbacks onSnapshot callback:", err);
+    }
   }, err => {
     console.error("Firestore feedbacks snapshot error:", err);
   });
@@ -587,7 +600,7 @@ function initTrendChart() {
   trendChartInstance = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: recentHistory.map(h => h.date.slice(5)),
+      labels: recentHistory.map(h => h.date ? h.date.slice(5) : ""),
       datasets: [{
         label: '総合スコア',
         data: recentHistory.map(h => h.score),
