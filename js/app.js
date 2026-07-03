@@ -463,6 +463,12 @@ function setupFirestoreRealtimeSync() {
     }
   }, err => {
     console.error("Firestore videos snapshot error:", err);
+    const globalSyncBadge = document.getElementById('global-sync-badge');
+    if (globalSyncBadge) {
+      globalSyncBadge.textContent = '🔴 同期エラー (設定/権限不足)';
+      globalSyncBadge.className = 'status-badge pending';
+    }
+    showToast('⚠️', `動画同期エラー: ${err.message}`);
   });
   
   // Real-time listener for feedbacks
@@ -478,6 +484,7 @@ function setupFirestoreRealtimeSync() {
     }
   }, err => {
     console.error("Firestore feedbacks snapshot error:", err);
+    showToast('⚠️', `評価同期エラー: ${err.message}`);
   });
 }
 
