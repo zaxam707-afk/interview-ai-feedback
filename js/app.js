@@ -1588,7 +1588,13 @@ async function runPipelineStep(apiKey, isFast) {
       } else {
         duration = isFast ? 800 : 4000;
         logToConsole('cmd', `> python transcribe_interview.py --file_uri https://generativelanguage.googleapis.com/v1beta/files/file-example`);
-        logToConsole('error', `⚠️ [WARNING] APIキーが設定されていないため、実際の音声解析はスキップし、シミュレーション用のモックデータを使用します。`);
+        if (!apiKey) {
+          logToConsole('error', `⚠️ [WARNING] Gemini APIキーが設定されていないため、実際の音声解析はスキップし、シミュレーション用のモックデータを使用します。`);
+        } else if (!importedFile) {
+          logToConsole('error', `⚠️ [WARNING] 音声ファイルの実体（ファイルオブジェクト）がメモリ内に存在しないため、実際の音声解析はスキップし、シミュレーション用のモックデータを使用します。（リロード等でメモリから消えた場合は、コントロールパネルからファイルを選択し直してください）`);
+        } else {
+          logToConsole('error', `⚠️ [WARNING] 音声ファイルのアップロード情報が存在しないため、実際の音声解析はスキップし、シミュレーション用のモックデータを使用します。`);
+        }
         logToConsole('info', `[INFO] 【文字起こし処理中】Gemini 2.5 Flashを呼び出しています...`);
         logToConsole('system', `[SYSTEM] 音声データから話者分離（面接官・応募者）およびタイムスタンプ生成中...`);
         
@@ -1679,7 +1685,13 @@ async function runPipelineStep(apiKey, isFast) {
       } else {
         duration = isFast ? 800 : 4000;
         logToConsole('cmd', `> python evaluate_transcript.py --transcript_file transcription.txt`);
-        logToConsole('error', `⚠️ [WARNING] APIキーが設定されていないため、実際の音声評価はスキップし、シミュレーション用のモックデータを使用します。`);
+        if (!apiKey) {
+          logToConsole('error', `⚠️ [WARNING] Gemini APIキーが設定されていないため、実際の音声評価はスキップし、シミュレーション用のモックデータを使用します。`);
+        } else if (!importedFile) {
+          logToConsole('error', `⚠️ [WARNING] 音声ファイルの実体（ファイルオブジェクト）がメモリ内に存在しないため、実際の音声評価はスキップし、シミュレーション用のモックデータを使用します。（リロード等でメモリから消えた場合は、コントロールパネルからファイルを選択し直してください）`);
+        } else {
+          logToConsole('error', `⚠️ [WARNING] 音声ファイルのアップロード情報が存在しないため、実際の音声評価はスキップし、シミュレーション用のモックデータを使用します。`);
+        }
         logToConsole('info', `[INFO] 【評価スコアリング処理中】生成された書き起こしテキストのみに基づいて客観評価を実行中...`);
         logToConsole('system', `[SYSTEM] 3大評価項目（アイスブレイク・傾聴力、質問・深掘り力、アトラクト・構造化）の採点・定性フィードバック作成中...`);
         
