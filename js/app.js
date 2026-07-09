@@ -487,6 +487,30 @@ function setupFirestoreRealtimeSync() {
     console.error("Firestore feedbacks snapshot error:", err);
     showToast('⚠️', `評価同期エラー: ${err.message}`);
   });
+
+  // Real-time listener for shared settings (Gemini API Key)
+  firebaseDb.collection("shared_settings").doc("gemini").onSnapshot(doc => {
+    if (doc.exists) {
+      const data = doc.data();
+      if (data.apiKey) {
+        SHARED_API_KEY = data.apiKey;
+        
+        // Update checkbox state on this device
+        const shareCheckbox = document.getElementById('settings-share-api-key');
+        if (shareCheckbox) {
+          const localKey = document.getElementById('settings-api-key') ? document.getElementById('settings-api-key').value.trim() : '';
+          shareCheckbox.checked = (localKey === SHARED_API_KEY);
+        }
+      }
+    } else {
+      SHARED_API_KEY = '';
+      const shareCheckbox = document.getElementById('settings-share-api-key');
+      if (shareCheckbox) shareCheckbox.checked = false;
+    }
+    updateApiKeyStatus();
+  }, err => {
+    console.error("Firestore shared settings snapshot error:", err);
+  });
 }
 
 // ===== Navigation =====
@@ -640,6 +664,7 @@ function showFeedbackPage(key) {
 // ===== Charts =====
 let trendChartInstance, radarChartInstance, historyChartInstance, gradeDistChartInstance;
 let historyChartType = 'all';
+let SHARED_API_KEY = '';
 
 function initTrendChart() {
   const ctx = document.getElementById('trendChart').getContext('2d');
@@ -1633,7 +1658,10 @@ function startAgentPipeline() {
   }
   
   const apiKeyInput = document.getElementById('settings-api-key');
-  const apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+  let apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+  if (!apiKey && SHARED_API_KEY) {
+    apiKey = SHARED_API_KEY;
+  }
 
   // Check if trying to run a custom file without an API key
   if (importedFile && !apiKey && !simulationForceProceed) {
@@ -2773,14 +2801,11 @@ function setupApiKeyEvents() {
     const checkStatus = () => {
       const val = apiKeyInput.value.trim();
       if (val) {
-        apiKeyStatus.textContent = '実API接続モード';
-        apiKeyStatus.className = 'status-badge done';
         localStorage.setItem('gemini_api_key', val);
       } else {
-        apiKeyStatus.textContent = 'シミュレーション';
-        apiKeyStatus.className = 'status-badge pending';
         localStorage.removeItem('gemini_api_key');
       }
+      updateApiKeyStatus();
     };
     
     apiKeyInput.addEventListener('input', checkStatus);
@@ -2967,3 +2992,55 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupApiKeyEvents();
   setupVideosImportEvents();
 });
+
+function updateApiKeyStatus() {
+  const localKey = document.getElementById('settings-api-key') ? document.getElementById('settings-api-key').value.trim() : '';
+  const statusEl = document.getElementById('api-key-status');
+  if (!statusEl) return;
+  
+  if (localKey) {
+    statusEl.textContent = '● 設定済み (端末ローカル)';
+    statusEl.className = 'status-badge done';
+  } else if (SHARED_API_KEY) {
+    statusEl.textContent = '🟢 クラウド共有キーが有効';
+    statusEl.className = 'status-badge done';
+  } else {
+    statusEl.textContent = 'シミュレーション';
+    statusEl.className = 'status-badge pending';
+  }
+}
+
+function toggleShareApiKey(checked) {
+  if (!firebaseDb) {
+    showToast('⚠️', 'Firebaseに接続されていません。まずFirebase共有設定を保存してください。');
+    const chk = document.getElementById('settings-share-api-key');
+    if (chk) chk.checked = false;
+    return;
+  }
+  
+  const localKey = document.getElementById('settings-api-key') ? document.getElementById('settings-api-key').value.trim() : '';
+  if (checked) {
+    if (!localKey) {
+      showToast('⚠️', '共有するAPIキーが設定されていません。入力フィールドにAPIキーを記入してください。');
+      const chk = document.getElementById('settings-share-api-key');
+      if (chk) chk.checked = false;
+      return;
+    }
+    firebaseDb.collection("shared_settings").doc("gemini").set({
+      apiKey: localKey,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }).then(() => {
+      showToast('✅', 'APIキーをチームメンバー全員と共有しました！');
+    }).catch(err => {
+      showToast('⚠️', `共有に失敗しました: ${err.message}`);
+      const chk = document.getElementById('settings-share-api-key');
+      if (chk) chk.checked = false;
+    });
+  } else {
+    firebaseDb.collection("shared_settings").doc("gemini").delete().then(() => {
+      showToast('ℹ️', '共有APIキーを削除しました。');
+    }).catch(err => {
+      showToast('⚠️', `削除に失敗しました: ${err.message}`);
+    });
+  }
+}

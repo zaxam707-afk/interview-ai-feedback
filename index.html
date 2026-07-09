@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>面接官AIフィードバック｜デモ</title>
   <meta name="description" content="面接録画をAIが分析し、面接官のスキル向上をサポートするフィードバックシステムのデモ" />
-  <link rel="stylesheet" href="css/style.css?v=2.1.1" />
+  <link rel="stylesheet" href="css/style.css?v=2.2.0" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -415,6 +415,10 @@
             </div>
             <input type="password" id="settings-api-key" placeholder="APIキーを入力 (AIzaSy...)" 
               style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-size:13px;font-family:monospace;margin-top:4px;">
+            <label style="font-size:11.5px;color:var(--text-muted);display:inline-flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+              <input type="checkbox" id="settings-share-api-key" onchange="toggleShareApiKey(this.checked)" style="cursor:pointer;width:14px;height:14px;accent-color:var(--accent-cyan);">
+              APIキーをクラウド(Firestore)に保存し、チームで共有する
+            </label>
           </div>
           <div class="score-bar-container mt-12">
             <div class="score-bar-header">
@@ -758,6 +762,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
-<script src="js/app.js?v=2.1.1"></script>
+<script src="js/app.js?v=2.2.0"></script>
 </body>
 </html>
