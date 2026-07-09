@@ -2531,7 +2531,7 @@ function renderVideosTable() {
           <div class="file-meta">${isNewMarkup}</div>
         </td>
         <td>
-          <input type="text" value="${v.group || ''}" onchange="changeVideoGroup('${v.key}', this.value)" style="padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font-size: 12px; max-width: 140px; width: 100%;">
+          <input type="text" value="${v.group || ''}" onchange="changeVideoGroup('${v.key}', this.value)" placeholder="面接官名を入力..." style="padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font-size: 13px; max-width: 220px; width: 100%; box-sizing: border-box; transition: all 0.3s ease;">
         </td>
         <td>${v.date}</td>
         <td>${v.duration}</td>
