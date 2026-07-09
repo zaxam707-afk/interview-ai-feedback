@@ -504,95 +504,137 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
 
 // ===== Show Feedback Page =====
 function showFeedbackPage(key) {
-  const fb = MOCK_FEEDBACKS[key];
-  if (!fb) return;
+  let fb = MOCK_FEEDBACKS[key];
+  if (!fb) {
+    // Fallback: If feedback is missing but the video status is done, recreate it dynamically from video info
+    const video = VIDEOS_DATA.find(v => v.key === key);
+    if (video && video.status === 'done') {
+      console.warn(`Feedback details missing for video key: ${key}. Recreating fallback feedback.`);
+      let templateKey = 'tanaka';
+      if (video.grade === 'A') templateKey = 'sato';
+      else if (video.grade === 'B') templateKey = 'takahashi';
+      else if (video.grade === 'D') templateKey = 'suzuki';
+      
+      const template = MOCK_FEEDBACKS[templateKey] || MOCK_FEEDBACKS['tanaka'];
+      if (template) {
+        fb = {
+          ...template,
+          title: video.name || '無題の面接',
+          subtitle: `${video.date || new Date().toLocaleDateString('ja-JP')} ・ ${video.duration || '30分'} ・ ${video.size || '150 MB'}`,
+          total: video.score !== null && video.score !== undefined ? video.score : template.total,
+          grade: video.grade && video.grade !== '—' ? video.grade : template.grade,
+          isMock: true
+        };
+        MOCK_FEEDBACKS[key] = fb;
+        saveStateToLocalStorage();
+      }
+    }
+  }
+
+  if (!fb) {
+    showToast('⚠️', 'フィードバック詳細データが見つかりません。同期中か、データが保存されていない可能性があります。');
+    return;
+  }
   
-  // Show or hide simulation warning banner
-  const warningEl = document.getElementById('fb-simulation-warning');
-  if (warningEl) {
-    if (fb.isMock) {
-      warningEl.style.display = 'flex';
-    } else {
-      warningEl.style.display = 'none';
+  try {
+    // Show or hide simulation warning banner
+    const warningEl = document.getElementById('fb-simulation-warning');
+    if (warningEl) {
+      warningEl.style.display = fb.isMock ? 'flex' : 'none';
     }
-  }
 
-  document.getElementById('fbTitle').textContent = fb.title;
-  document.getElementById('fbSubtitle').textContent = fb.subtitle;
-  document.getElementById('fbTotalScore').textContent = fb.total;
-  const gradeEl = document.getElementById('fbGrade');
-  gradeEl.textContent = fb.grade;
-  const gradeColors = { A:'var(--accent-green)', B:'var(--accent-blue)', C:'var(--accent-orange)', D:'var(--accent-red)' };
-  gradeEl.style.color = gradeColors[fb.grade];
-  document.getElementById('fbGradeLabel').textContent = fb.gradeLabel;
+    document.getElementById('fbTitle').textContent = fb.title || '無題の面接';
+    document.getElementById('fbSubtitle').textContent = fb.subtitle || '';
+    document.getElementById('fbTotalScore').textContent = fb.total !== undefined ? fb.total : '—';
+    
+    const gradeEl = document.getElementById('fbGrade');
+    if (gradeEl) {
+      gradeEl.textContent = fb.grade || '—';
+      const gradeColors = { A:'var(--accent-green)', B:'var(--accent-blue)', C:'var(--accent-orange)', D:'var(--accent-red)' };
+      gradeEl.style.color = gradeColors[fb.grade] || 'var(--text-primary)';
+    }
+    
+    const gradeLabelEl = document.getElementById('fbGradeLabel');
+    if (gradeLabelEl) {
+      gradeLabelEl.textContent = fb.gradeLabel || '判定なし';
+    }
 
-  // Score bars
-  const barsHtml = CRITERIA.map(c => {
-    const s = fb.scores[c.key];
-    const pct = (s / 5) * 100;
-    return `<div class="score-bar-container"><div class="score-bar-header"><span class="score-bar-label">${c.icon} ${c.name}</span><span class="score-bar-value">${s} / 5</span></div><div class="score-bar-track"><div class="score-bar-fill" style="width:0%" data-target="${pct}"></div></div></div>`;
-  }).join('');
-  document.getElementById('scoreBars').innerHTML = barsHtml;
+    // Score bars
+    const scores = fb.scores || { icebreak_listening: 3, question_drilldown: 3, attract_structure: 3 };
+    const barsHtml = CRITERIA.map(c => {
+      const s = scores[c.key] !== undefined ? scores[c.key] : 3;
+      const pct = (s / 5) * 100;
+      return `<div class="score-bar-container"><div class="score-bar-header"><span class="score-bar-label">${c.icon} ${c.name}</span><span class="score-bar-value">${s} / 5</span></div><div class="score-bar-track"><div class="score-bar-fill" style="width:0%" data-target="${pct}"></div></div></div>`;
+    }).join('');
+    document.getElementById('scoreBars').innerHTML = barsHtml;
 
-  // Animate bars
-  setTimeout(() => {
-    document.querySelectorAll('.score-bar-fill').forEach(bar => {
-      bar.style.width = bar.dataset.target + '%';
-    });
-  }, 100);
+    // Animate bars
+    setTimeout(() => {
+      document.querySelectorAll('.score-bar-fill').forEach(bar => {
+        bar.style.width = bar.dataset.target + '%';
+      });
+    }, 100);
 
-  // Strengths
-  document.getElementById('fbStrengths').innerHTML = fb.strengths.map(s =>
-    `<div class="insight-card strength"><div class="insight-icon">✅</div><div class="insight-text">${s}</div></div>`
-  ).join('');
+    // Strengths
+    const strengths = Array.isArray(fb.strengths) ? fb.strengths : [];
+    document.getElementById('fbStrengths').innerHTML = strengths.map(s =>
+      `<div class="insight-card strength"><div class="insight-icon">✅</div><div class="insight-text">${s}</div></div>`
+    ).join('');
 
-  // Improvements
-  document.getElementById('fbImprovements').innerHTML = fb.improvements.map(s =>
-    `<div class="insight-card improvement"><div class="insight-icon">💡</div><div class="insight-text">${s}</div></div>`
-  ).join('');
+    // Improvements
+    const improvements = Array.isArray(fb.improvements) ? fb.improvements : [];
+    document.getElementById('fbImprovements').innerHTML = improvements.map(s =>
+      `<div class="insight-card improvement"><div class="insight-icon">💡</div><div class="insight-text">${s}</div></div>`
+    ).join('');
 
-  // Criteria detail
-  document.getElementById('fbCriteriaDetail').innerHTML = CRITERIA.map(c => {
-    const d = fb.details[c.key];
-    const tsHtml = d.timestamps.length ? d.timestamps.map(t => `<span class="feedback-timestamp">📍 ${t}</span>`).join(' ') : '';
-    return `<div class="feedback-item"><div class="feedback-item-header"><div class="feedback-item-title">${c.icon} ${c.name}</div><div class="feedback-item-score" style="color:${d.score>=4?'var(--accent-green)':d.score>=3?'var(--accent-blue)':'var(--accent-orange)'}">${d.score}/5</div></div><div class="feedback-item-comment">${d.comment}</div>${tsHtml?'<div class="mt-12">'+tsHtml+'</div>':''}</div>`;
-  }).join('');
+    // Criteria detail
+    const details = fb.details || {};
+    document.getElementById('fbCriteriaDetail').innerHTML = CRITERIA.map(c => {
+      const d = details[c.key] || { score: 3, comment: '詳細コメントはありません。', timestamps: [] };
+      const timestamps = Array.isArray(d.timestamps) ? d.timestamps : [];
+      const tsHtml = timestamps.length ? timestamps.map(t => `<span class="feedback-timestamp">📍 ${t}</span>`).join(' ') : '';
+      return `<div class="feedback-item"><div class="feedback-item-header"><div class="feedback-item-title">${c.icon} ${c.name}</div><div class="feedback-item-score" style="color:${d.score>=4?'var(--accent-green)':d.score>=3?'var(--accent-blue)':'var(--accent-orange)'}">${d.score}/5</div></div><div class="feedback-item-comment">${d.comment}</div>${tsHtml?'<div class="mt-12">'+tsHtml+'</div>':''}</div>`;
+    }).join('');
 
-  // Overall comment
-  document.getElementById('fbOverallComment').textContent = fb.overall;
+    // Overall comment
+    document.getElementById('fbOverallComment').textContent = fb.overall || '総評はありません。';
 
-  // Render dialogue bubbles for transcription
-  const transcriptionEl = document.getElementById('fbTranscription');
-  if (transcriptionEl) {
-    if (Array.isArray(fb.transcription) && fb.transcription.length > 0) {
-      transcriptionEl.innerHTML = fb.transcription.map(t => {
-        const isInterviewer = t.speaker === '面接官';
-        const speakerColor = isInterviewer ? 'rgba(34, 211, 238, 0.08)' : 'rgba(52, 211, 153, 0.08)';
-        const borderColor = isInterviewer ? 'var(--accent-cyan)' : 'var(--accent-green)';
-        const nameColor = isInterviewer ? 'var(--accent-cyan)' : 'var(--accent-green)';
-        return `
-          <div class="script-bubble-row" style="display: flex; align-items: flex-start; margin-bottom: 12px; gap: 12px;">
-            <div style="font-size: 11px; color: var(--text-muted); background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px; font-family: monospace; align-self: flex-start; margin-top: 4px; min-width: 45px; text-align: center;">
-              ${t.time}
-            </div>
-            <div class="script-bubble" style="flex: 1; padding: 10px 14px; border-radius: 8px; background: ${speakerColor}; border-left: 4px solid ${borderColor};">
-              <div style="font-weight: bold; font-size: 11px; margin-bottom: 2px; color: ${nameColor}; display: flex; align-items: center; gap: 4px;">
-                <span>${isInterviewer ? '👤' : '💬'}</span>
-                <span>${t.speaker}</span>
+    // Render dialogue bubbles for transcription
+    const transcriptionEl = document.getElementById('fbTranscription');
+    if (transcriptionEl) {
+      if (Array.isArray(fb.transcription) && fb.transcription.length > 0) {
+        transcriptionEl.innerHTML = fb.transcription.map(t => {
+          const isInterviewer = t.speaker === '面接官';
+          const speakerColor = isInterviewer ? 'rgba(34, 211, 238, 0.08)' : 'rgba(52, 211, 153, 0.08)';
+          const borderColor = isInterviewer ? 'var(--accent-cyan)' : 'var(--accent-green)';
+          const nameColor = isInterviewer ? 'var(--accent-cyan)' : 'var(--accent-green)';
+          return `
+            <div class="script-bubble-row" style="display: flex; align-items: flex-start; margin-bottom: 12px; gap: 12px;">
+              <div style="font-size: 11px; color: var(--text-muted); background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px; font-family: monospace; align-self: flex-start; margin-top: 4px; min-width: 45px; text-align: center;">
+                ${t.time || '00:00'}
               </div>
-              <div style="font-size: 13px; line-height: 1.5; color: var(--text-primary); white-space: pre-wrap;">${t.text}</div>
+              <div class="script-bubble" style="flex: 1; padding: 10px 14px; border-radius: 8px; background: ${speakerColor}; border-left: 4px solid ${borderColor};">
+                <div style="font-weight: bold; font-size: 11px; margin-bottom: 2px; color: ${nameColor}; display: flex; align-items: center; gap: 4px;">
+                  <span>${isInterviewer ? '👤' : '💬'}</span>
+                  <span>${t.speaker || '不明'}</span>
+                </div>
+                <div style="font-size: 13px; line-height: 1.5; color: var(--text-primary); white-space: pre-wrap;">${t.text || ''}</div>
+              </div>
             </div>
-          </div>
-        `;
-      }).join('');
-    } else {
-      transcriptionEl.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px; font-size: 13px;">文字起こしデータはありません。</div>`;
+          `;
+        }).join('');
+      } else {
+        transcriptionEl.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px; font-size: 13px;">文字起こしデータはありません。</div>`;
+      }
     }
-  }
 
-  // Radar chart
-  renderRadarChart(fb.scores);
-  navigateTo('feedback');
+    // Radar chart
+    renderRadarChart(scores);
+    navigateTo('feedback');
+  } catch (err) {
+    console.error("Error rendering feedback page:", err);
+    showToast('⚠️', `詳細ページの読み込みに失敗しました: ${err.message}`);
+  }
 }
 
 // ===== Charts =====
