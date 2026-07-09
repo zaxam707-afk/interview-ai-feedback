@@ -560,7 +560,7 @@ function showFeedbackPage(key) {
     }
 
     // Score bars
-    const scores = fb.scores || { icebreak_listening: 3, question_drilldown: 3, attract_structure: 3 };
+    const scores = fb.scores || { icebreak_listening: 3, question_deepening: 3, attract_structure: 3 };
     const barsHtml = CRITERIA.map(c => {
       const s = scores[c.key] !== undefined ? scores[c.key] : 3;
       const pct = (s / 5) * 100;
@@ -758,7 +758,7 @@ function initHistoryChart() {
         label: '質問・深掘り力',
         data: recentHistory.map(h => {
           const fb = MOCK_FEEDBACKS[h.key];
-          return fb && fb.scores ? fb.scores.question_drilldown : 3;
+          return fb && fb.scores ? fb.scores.question_deepening : 3;
         }),
         borderColor: '#3b82f6',
         backgroundColor: 'transparent',
