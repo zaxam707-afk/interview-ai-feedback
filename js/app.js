@@ -654,6 +654,25 @@ function showFeedbackPage(key) {
 
     // Radar chart
     renderRadarChart(scores);
+    
+    // Update selectors in feedback page
+    const video = VIDEOS_DATA.find(v => v.key === key);
+    if (video) {
+      updateDetailSelects();
+      const interviewerSelect = document.getElementById('detailInterviewerSelect');
+      const videoSelect = document.getElementById('detailVideoSelect');
+      if (interviewerSelect && videoSelect) {
+        interviewerSelect.value = video.group || 'その他';
+        
+        // Re-populate video select for this interviewer
+        const videos = VIDEOS_DATA.filter(v => v.status === 'done' && (v.group || 'その他') === (video.group || 'その他'));
+        videoSelect.innerHTML = '<option value="" disabled selected>動画を選択してください...</option>' +
+          videos.map(v => `<option value="${v.key}">${v.name}</option>`).join('');
+        videoSelect.value = key;
+        videoSelect.disabled = false;
+      }
+    }
+    
     navigateTo('feedback');
   } catch (err) {
     console.error("Error rendering feedback page:", err);
@@ -665,6 +684,7 @@ function showFeedbackPage(key) {
 let trendChartInstance, radarChartInstance, historyChartInstance, gradeDistChartInstance;
 let historyChartType = 'all';
 let SHARED_API_KEY = '';
+let currentAnalysisVideoKey = '';
 
 function initTrendChart() {
   const ctx = document.getElementById('trendChart').getContext('2d');
@@ -1003,29 +1023,31 @@ function simulateAnalyzeSingle(btn) {
   const video = VIDEOS_DATA.find(v => v.key === key);
   if (!video) return;
 
-  // Navigate to Agent page
-  navigateTo('agent');
+  // Set the current key as a global variable
+  currentAnalysisVideoKey = key;
 
-  // Reset pipeline if already completed/running to make sure it runs fresh
+  // Pre-select the file or preset
+  if (video.fileObject && video.fileObject instanceof File) {
+    importedFile = video.fileObject;
+    selectedPresetKey = null;
+  } else {
+    importedFile = null;
+    selectedPresetKey = key;
+  }
+
+  // Update target display
+  const targetEl = document.getElementById('active-analysis-target');
+  if (targetEl) {
+    targetEl.innerHTML = `分析対象: <strong>${video.name}</strong> (${video.group || '面接官未指定'})`;
+  }
+
+  // Reset pipeline if already completed/running
   if (pipelineCompleted || pipelineRunning) {
     resetAgentPipeline();
   }
 
-  // Pre-select the file on the Agent page
-  if (video.fileObject && video.fileObject instanceof File) {
-    // If it's a custom file, set it as the imported file
-    handleFileSelect(video.fileObject);
-  } else {
-    // If it's a preset candidate (e.g. sato, takahashi, ito), select it in the preset select dropdown
-    selectPresetVideo(key);
-    const selectEl = document.getElementById('agent-video-select');
-    if (selectEl) selectEl.value = key;
-  }
-
-  // Automatically start the pipeline after a short delay for smooth transition
-  setTimeout(() => {
-    startAgentPipeline();
-  }, 500);
+  // Start the pipeline immediately
+  startAgentPipeline();
 }
 
 function simulateAnalyzeAll() {
@@ -2222,10 +2244,9 @@ function updatePreviewsWithResults(candidateKey) {
 
 function integrateResultsIntoApp(candidateKey) {
   const baseTitle = parsedResult.title.replace('.mp4', '').replace('.mp3', '');
-  const groupInput = document.getElementById('agent-group-input');
-  const groupName = groupInput ? (groupInput.value.trim() || 'その他') : 'その他';
   
   const existingVideo = VIDEOS_DATA.find(v => v.key === candidateKey);
+  const groupName = existingVideo ? (existingVideo.group || 'その他') : 'その他';
   if (existingVideo) {
     existingVideo.status = 'done';
     existingVideo.grade = parsedResult.grade;
@@ -2334,6 +2355,10 @@ function resetAgentPipeline() {
   if (pipelineStatus) {
     pipelineStatus.textContent = '待機中';
     pipelineStatus.className = 'status-badge pending';
+  }
+  const targetEl = document.getElementById('active-analysis-target');
+  if (targetEl) {
+    targetEl.textContent = '分析対象: 未選択';
   }
   
   nodes.forEach(n => {
@@ -2481,14 +2506,12 @@ function renderVideosTable() {
   }
   
   tbody.innerHTML = filteredVideos.map(v => {
-    let statusBadge = '';
-    let scoreBadge = '';
-    let actionBtn = '';
+    let deleteBtn = `<button class="btn btn-sm" style="background:transparent; border:none; padding:4px 8px; color:var(--accent-red); cursor:pointer; font-size:14px; margin-left:8px;" onclick="deleteVideo('${v.key}')" title="削除">🗑️</button>`;
     
     if (v.status === 'done') {
       statusBadge = `<span class="status-badge done">✓ 分析済み</span>`;
       scoreBadge = `<span class="grade-badge ${v.grade}">${v.grade}</span>`;
-      actionBtn = `<button class="btn btn-sm btn-secondary" onclick="showFeedbackPage('${v.key}')">詳細</button>`;
+      actionBtn = `<button class="btn btn-sm btn-secondary" onclick="showFeedbackPage('${v.key}')">詳細</button>` + deleteBtn;
     } else if (v.status === 'processing') {
       statusBadge = `<span class="status-badge processing">⟳ 分析中...</span>`;
       scoreBadge = `—`;
@@ -2496,7 +2519,7 @@ function renderVideosTable() {
     } else {
       statusBadge = `<span class="status-badge pending">● 未分析</span>`;
       scoreBadge = `—`;
-      actionBtn = `<button class="btn btn-sm btn-primary" onclick="simulateAnalyzeSingle(this)">🤖 分析</button>`;
+      actionBtn = `<button class="btn btn-sm btn-primary" onclick="simulateAnalyzeSingle(this)">🤖 分析</button>` + deleteBtn;
     }
     
     const isNewMarkup = v.isNew ? `<strong style="color:var(--accent-cyan)">NEW</strong>` : `Google Drive • 自動検出`;
@@ -3042,5 +3065,70 @@ function toggleShareApiKey(checked) {
     }).catch(err => {
       showToast('⚠️', `削除に失敗しました: ${err.message}`);
     });
+  }
+}
+
+function deleteVideo(key) {
+  if (!confirm('この動画および分析結果を完全に削除してもよろしいですか？')) {
+    return;
+  }
+  
+  // 1. Remove from VIDEOS_DATA
+  VIDEOS_DATA = VIDEOS_DATA.filter(v => v.key !== key);
+  
+  // 2. Remove from MOCK_FEEDBACKS
+  delete MOCK_FEEDBACKS[key];
+  
+  // 3. Remove from Firestore if connected
+  if (typeof firebaseDb !== 'undefined' && firebaseDb) {
+    firebaseDb.collection("videos").doc(key).delete().catch(err => console.error("Firestore video delete error:", err));
+    firebaseDb.collection("feedbacks").doc(key).delete().catch(err => console.error("Firestore feedback delete error:", err));
+  }
+  
+  // 4. Save state, refresh views
+  saveStateToLocalStorage();
+  updateGroupDropdowns();
+  renderVideosTable();
+  updateDashboardMetrics();
+  
+  showToast('🗑️', '動画と分析結果を削除しました');
+}
+
+function updateDetailSelects() {
+  const interviewerSelect = document.getElementById('detailInterviewerSelect');
+  if (!interviewerSelect) return;
+  
+  const analyzedVideos = VIDEOS_DATA.filter(v => v.status === 'done');
+  const interviewers = [...new Set(analyzedVideos.map(v => v.group || 'その他'))];
+  
+  const prevVal = interviewerSelect.value;
+  
+  interviewerSelect.innerHTML = '<option value="" disabled selected>選択してください...</option>' + 
+    interviewers.map(int => `<option value="${int}">${int}</option>`).join('');
+    
+  if (prevVal && interviewers.includes(prevVal)) {
+    interviewerSelect.value = prevVal;
+  }
+}
+
+function onDetailInterviewerChange() {
+  const interviewerSelect = document.getElementById('detailInterviewerSelect');
+  const videoSelect = document.getElementById('detailVideoSelect');
+  if (!interviewerSelect || !videoSelect) return;
+  
+  const interviewer = interviewerSelect.value;
+  const videos = VIDEOS_DATA.filter(v => v.status === 'done' && (v.group || 'その他') === interviewer);
+  
+  videoSelect.innerHTML = '<option value="" disabled selected>動画を選択してください...</option>' +
+    videos.map(v => `<option value="${v.key}">${v.name}</option>`).join('');
+  videoSelect.disabled = false;
+}
+
+function onDetailVideoChange() {
+  const videoSelect = document.getElementById('detailVideoSelect');
+  if (!videoSelect) return;
+  const key = videoSelect.value;
+  if (key) {
+    showFeedbackPage(key);
   }
 }
