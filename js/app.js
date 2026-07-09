@@ -355,10 +355,10 @@ function saveStateToLocalStorage() {
   try {
     localStorage.setItem('interview_history_data', JSON.stringify(HISTORY_DATA));
     localStorage.setItem('interview_videos_data', JSON.stringify(VIDEOS_DATA));
-    // Save only custom feedbacks (that were added dynamically by user and don't have isMock=true)
+    // Save only custom feedbacks (that were added dynamically by user and start with custom_)
     const customFeedbacks = {};
     for (const k in MOCK_FEEDBACKS) {
-      if (MOCK_FEEDBACKS[k] && !MOCK_FEEDBACKS[k].isMock) {
+      if (MOCK_FEEDBACKS[k] && k.startsWith('custom_')) {
         customFeedbacks[k] = MOCK_FEEDBACKS[k];
       }
     }
@@ -418,9 +418,9 @@ function setupFirestoreRealtimeSync() {
         });
 
         const PRESET_VIDEOS = [
-          { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
-          { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
-          { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
+          { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '佐藤面接官' },
+          { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '高橋面接官' },
+          { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '伊藤面接官' }
         ];
         
         const presetsToAppend = PRESET_VIDEOS.filter(p => !loadedVideos.some(lv => lv.key === p.key));
@@ -428,9 +428,9 @@ function setupFirestoreRealtimeSync() {
       } else {
         // If Firestore is connected but empty, use presets
         VIDEOS_DATA = [
-          { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
-          { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
-          { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
+          { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '佐藤面接官' },
+          { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '高橋面接官' },
+          { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '伊藤面接官' }
         ];
       }
       
@@ -456,6 +456,7 @@ function setupFirestoreRealtimeSync() {
       if (document.getElementById('historyChart')) initHistoryChart();
       if (document.getElementById('gradeDistChart')) initGradeDistChart();
       renderHistoryList();
+      renderInterviewerTendencies();
       renderVideosTable();
       updateDashboardMetrics();
     } catch (err) {
@@ -596,6 +597,7 @@ function showFeedbackPage(key) {
 
 // ===== Charts =====
 let trendChartInstance, radarChartInstance, historyChartInstance, gradeDistChartInstance;
+let historyChartType = 'all';
 
 function initTrendChart() {
   const ctx = document.getElementById('trendChart').getContext('2d');
@@ -665,45 +667,121 @@ function initHistoryChart() {
   const ctx = document.getElementById('historyChart').getContext('2d');
   if (historyChartInstance) historyChartInstance.destroy();
 
-  // Limit to latest 10 entries for bar chart as well
-  const recentHistory = HISTORY_DATA.slice(0, 10).reverse();
+  const filterSelect = document.getElementById('historyInterviewerFilter');
+  const interviewer = filterSelect ? filterSelect.value : 'all';
 
-  historyChartInstance = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: recentHistory.map(h => h.name),
-      datasets: [{
-        label: 'スコア',
-        data: recentHistory.map(h => h.score),
-        backgroundColor: recentHistory.map(h => {
-          const colors = { A:'rgba(52,211,153,0.6)', B:'rgba(59,130,246,0.6)', C:'rgba(245,158,11,0.6)', D:'rgba(239,68,68,0.6)' };
-          return colors[h.grade];
-        }),
-        borderRadius: 6, borderSkipped: false
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      scales: {
-        y: { min: 0, max: 15, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#5a6480' } },
-        x: { grid: { display: false }, ticks: { color: '#5a6480', font: { size: 10 } } }
+  // Filter history data
+  const filteredHistory = HISTORY_DATA.filter(h => interviewer === 'all' || h.group === interviewer);
+  const recentHistory = filteredHistory.slice(0, 10).reverse();
+
+  if (historyChartType === 'all') {
+    historyChartInstance = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: recentHistory.map(h => h.name),
+        datasets: [{
+          label: '総合スコア',
+          data: recentHistory.map(h => h.score),
+          backgroundColor: recentHistory.map(h => {
+            const colors = { A:'rgba(52,211,153,0.6)', B:'rgba(59,130,246,0.6)', C:'rgba(245,158,11,0.6)', D:'rgba(239,68,68,0.6)' };
+            return colors[h.grade] || 'rgba(255,255,255,0.2)';
+          }),
+          borderRadius: 6, borderSkipped: false
+        }]
       },
-      plugins: { legend: { display: false } }
-    }
-  });
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          y: { min: 0, max: 15, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#5a6480' } },
+          x: { grid: { display: false }, ticks: { color: '#5a6480', font: { size: 10 } } }
+        },
+        plugins: { legend: { display: false } }
+      }
+    });
+  } else {
+    // Show line chart with 3 datasets for detailed criteria!
+    const datasets = [
+      {
+        label: 'アイスブレイク・傾聴力',
+        data: recentHistory.map(h => {
+          const fb = MOCK_FEEDBACKS[h.key];
+          return fb && fb.scores ? fb.scores.icebreak_listening : 3;
+        }),
+        borderColor: '#34d399',
+        backgroundColor: 'transparent',
+        tension: 0.3,
+        pointRadius: 4
+      },
+      {
+        label: '質問・深掘り力',
+        data: recentHistory.map(h => {
+          const fb = MOCK_FEEDBACKS[h.key];
+          return fb && fb.scores ? fb.scores.question_drilldown : 3;
+        }),
+        borderColor: '#3b82f6',
+        backgroundColor: 'transparent',
+        tension: 0.3,
+        pointRadius: 4
+      },
+      {
+        label: 'アトラクト・構造化',
+        data: recentHistory.map(h => {
+          const fb = MOCK_FEEDBACKS[h.key];
+          return fb && fb.scores ? fb.scores.attract_structure : 3;
+        }),
+        borderColor: '#f59e0b',
+        backgroundColor: 'transparent',
+        tension: 0.3,
+        pointRadius: 4
+      }
+    ];
+
+    historyChartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: recentHistory.map(h => h.name),
+        datasets: datasets
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          y: { min: 0, max: 5, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#5a6480', stepSize: 1 } },
+          x: { grid: { display: false }, ticks: { color: '#5a6480', font: { size: 10 } } }
+        },
+        plugins: {
+          legend: {
+            display: true,
+            labels: { color: '#8b95b0', font: { size: 10 } }
+          }
+        }
+      }
+    });
+  }
 }
 
 function initGradeDistChart() {
   const ctx = document.getElementById('gradeDistChart').getContext('2d');
   if (gradeDistChartInstance) gradeDistChartInstance.destroy();
 
-  // Calculate grade distribution dynamically from HISTORY_DATA
+  const filterSelect = document.getElementById('historyInterviewerFilter');
+  const interviewer = filterSelect ? filterSelect.value : 'all';
+
+  // Filter history data
+  const filteredHistory = HISTORY_DATA.filter(h => interviewer === 'all' || h.group === interviewer);
+
   const counts = { A: 0, B: 0, C: 0, D: 0 };
-  HISTORY_DATA.forEach(h => {
+  filteredHistory.forEach(h => {
     if (counts[h.grade] !== undefined) {
       counts[h.grade]++;
     }
   });
+
+  // Update dynamic count text in index.html
+  const total = filteredHistory.length;
+  document.getElementById('grade-count-A').textContent = `${counts.A}回 (${total ? Math.round(counts.A/total*100) : 0}%)`;
+  document.getElementById('grade-count-B').textContent = `${counts.B}回 (${total ? Math.round(counts.B/total*100) : 0}%)`;
+  document.getElementById('grade-count-C').textContent = `${counts.C}回 (${total ? Math.round(counts.C/total*100) : 0}%)`;
+  document.getElementById('grade-count-D').textContent = `${counts.D}回 (${total ? Math.round(counts.D/total*100) : 0}%)`;
 
   gradeDistChartInstance = new Chart(ctx, {
     type: 'doughnut',
@@ -719,7 +797,7 @@ function initGradeDistChart() {
     options: {
       responsive: true, maintainAspectRatio: false, cutout: '65%',
       plugins: {
-        legend: { position: 'bottom', labels: { color: '#8b95b0', font: { size: 11 }, padding: 12, usePointStyle: true, pointStyleWidth: 8 } }
+        legend: { display: false }
       }
     }
   });
@@ -728,7 +806,24 @@ function initGradeDistChart() {
 // ===== History List =====
 function renderHistoryList() {
   const el = document.getElementById('historyList');
-  el.innerHTML = HISTORY_DATA.map(h => {
+  if (!el) return;
+
+  const filterSelect = document.getElementById('historyInterviewerFilter');
+  const interviewer = filterSelect ? filterSelect.value : 'all';
+
+  const filteredHistory = HISTORY_DATA.filter(h => interviewer === 'all' || h.group === interviewer);
+
+  const totalCountEl = document.querySelector('#page-history .card-header .text-sm.text-muted');
+  if (totalCountEl) {
+    totalCountEl.textContent = `全${filteredHistory.length}件`;
+  }
+
+  if (filteredHistory.length === 0) {
+    el.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 40px;">該当する履歴はありません。</div>`;
+    return;
+  }
+
+  el.innerHTML = filteredHistory.map(h => {
     const video = VIDEOS_DATA.find(v => v.key === h.key) || VIDEOS_DATA.find(v => {
       const vName = extractCandidateName(v.name) + '面接官';
       return vName === h.name;
@@ -738,6 +833,65 @@ function renderHistoryList() {
     const gradeColors = { A:'var(--accent-green)', B:'var(--accent-blue)', C:'var(--accent-orange)', D:'var(--accent-red)' };
     return `<div class="history-item"${click}><div class="history-date">${h.date}</div><div class="grade-badge ${h.grade}" style="width:30px;height:30px;font-size:13px;">${h.grade}</div><div class="history-name">${h.name}</div><div class="history-score" style="color:${gradeColors[h.grade]}">${h.score}/15</div></div>`;
   }).join('');
+}
+
+function handleHistoryFilterChange() {
+  initHistoryChart();
+  initGradeDistChart();
+  renderHistoryList();
+  renderInterviewerTendencies();
+}
+
+function renderInterviewerTendencies() {
+  const filterSelect = document.getElementById('historyInterviewerFilter');
+  const interviewer = filterSelect ? filterSelect.value : 'all';
+  
+  const titleEl = document.getElementById('tendency-interviewer-name');
+  if (titleEl) {
+    titleEl.textContent = interviewer === 'all' ? 'すべて' : interviewer;
+  }
+  
+  const strengthsEl = document.getElementById('tendency-strengths');
+  const improvementsEl = document.getElementById('tendency-improvements');
+  if (!strengthsEl || !improvementsEl) return;
+  
+  const filteredHistory = HISTORY_DATA.filter(h => interviewer === 'all' || h.group === interviewer);
+  
+  let allStrengths = [];
+  let allImprovements = [];
+  
+  filteredHistory.forEach(h => {
+    const fb = MOCK_FEEDBACKS[h.key];
+    if (fb) {
+      if (Array.isArray(fb.strengths)) allStrengths.push(...fb.strengths);
+      if (Array.isArray(fb.improvements)) allImprovements.push(...fb.improvements);
+    }
+  });
+  
+  const uniqueStrengths = Array.from(new Set(allStrengths)).slice(0, 6);
+  const uniqueImprovements = Array.from(new Set(allImprovements)).slice(0, 6);
+  
+  if (uniqueStrengths.length === 0) {
+    strengthsEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">まだ分析データがありません。</div>`;
+  } else {
+    strengthsEl.innerHTML = uniqueStrengths.map(s => 
+      `<div style="display:flex; align-items:flex-start; gap:8px; font-size:12.5px; line-height:1.5; color:var(--text-primary);">
+        <span style="color:var(--accent-green);">✓</span>
+        <span>${s}</span>
+      </div>`
+    ).join('');
+  }
+  
+  if (uniqueImprovements.length === 0) {
+    improvementsEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">まだ分析データがありません。</div>`;
+  } else {
+    improvementsEl.innerHTML = uniqueImprovements.map(s => 
+      `<div style="display:flex; align-items:flex-start; gap:8px; font-size:12.5px; line-height:1.5; color:var(--text-primary);">
+        <span style="color:var(--accent-orange);">•</span>
+        <span>${s}</span>
+      </div>`
+    ).join('');
+  }
 }
 
 // ===== Settings Criteria =====
@@ -2191,12 +2345,14 @@ function viewDriveFileMock(key) {
 function updateGroupDropdowns() {
   const dashboardSelect = document.getElementById('dashboardGroupSelect');
   const filterSelect = document.getElementById('videoTableGroupFilter');
-  if (!dashboardSelect && !filterSelect) return;
+  const historySelect = document.getElementById('historyInterviewerFilter');
+  if (!dashboardSelect && !filterSelect && !historySelect) return;
 
   const dashboardVal = dashboardSelect ? dashboardSelect.value : 'all';
   const filterVal = filterSelect ? filterSelect.value : 'all';
+  const historyVal = historySelect ? historySelect.value : 'all';
 
-  const groupsSet = new Set(['新卒採用チーム', '中途開発チーム', 'カスタマーサポートチーム', 'その他']);
+  const groupsSet = new Set(['佐藤面接官', '高橋面接官', '伊藤面接官', 'その他']);
   VIDEOS_DATA.forEach(v => {
     if (v.group) groupsSet.add(v.group);
   });
@@ -2207,7 +2363,7 @@ function updateGroupDropdowns() {
   const uniqueGroups = Array.from(groupsSet).filter(g => g && g.trim() !== '');
 
   if (dashboardSelect) {
-    dashboardSelect.innerHTML = `<option value="all">全社</option>` + 
+    dashboardSelect.innerHTML = `<option value="all">すべての面接官</option>` + 
       uniqueGroups.map(g => `<option value="${g}">${g}</option>`).join('');
     if (uniqueGroups.includes(dashboardVal) || dashboardVal === 'all') {
       dashboardSelect.value = dashboardVal;
@@ -2217,12 +2373,22 @@ function updateGroupDropdowns() {
   }
 
   if (filterSelect) {
-    filterSelect.innerHTML = `<option value="all">すべてのグループ</option>` + 
+    filterSelect.innerHTML = `<option value="all">すべての面接官</option>` + 
       uniqueGroups.map(g => `<option value="${g}">${g}</option>`).join('');
     if (uniqueGroups.includes(filterVal) || filterVal === 'all') {
       filterSelect.value = filterVal;
     } else {
       filterSelect.value = 'all';
+    }
+  }
+
+  if (historySelect) {
+    historySelect.innerHTML = `<option value="all">すべての面接官</option>` + 
+      uniqueGroups.map(g => `<option value="${g}">${g}</option>`).join('');
+    if (uniqueGroups.includes(historyVal) || historyVal === 'all') {
+      historySelect.value = historyVal;
+    } else {
+      historySelect.value = 'all';
     }
   }
 }
@@ -2622,8 +2788,10 @@ function setupApiKeyEvents() {
 }
 
 function switchHistoryChart(btn, type) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#page-history .tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+  historyChartType = type;
+  initHistoryChart();
 }
 
 // ===== Init =====
@@ -2675,9 +2843,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load VIDEOS_DATA from localStorage
   const PRESET_VIDEOS = [
-    { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' },
-    { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '中途開発チーム' },
-    { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '新卒採用チーム' }
+    { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '佐藤面接官' },
+    { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '高橋面接官' },
+    { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '伊藤面接官' }
   ];
 
   try {
@@ -2749,6 +2917,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initHistoryChart();
   initGradeDistChart();
   renderHistoryList();
+  renderInterviewerTendencies();
   renderCriteriaSettings();
   renderVideosTable();
   updateDashboardMetrics();
