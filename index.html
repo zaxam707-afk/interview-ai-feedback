@@ -209,42 +209,50 @@
               分析対象: 未選択
             </div>
 
-            <!-- Pipeline nodes arranged vertically -->
-            <div class="pipeline-vertical-flow" style="display: flex; flex-direction: column; gap: 10px;">
-              <div class="pipeline-node" id="node-1" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,0.01);">
-                <span style="font-size: 18px;">📂</span>
-                <div style="flex:1;"><div style="font-weight: 500; font-size: 12px;">Node 1: Drive Trigger</div></div>
-                <span class="node-status" id="node-1-status" style="font-size: 11.5px; color: var(--text-muted);">待機中</span>
-              </div>
-              <div class="pipeline-node" id="node-2" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,0.01);">
-                <span style="font-size: 18px;">🎵</span>
-                <div style="flex:1;"><div style="font-weight: 500; font-size: 12px;">Node 2: Audio Extractor</div></div>
-                <span class="node-status" id="node-2-status" style="font-size: 11.5px; color: var(--text-muted);">待機中</span>
-              </div>
-              <div class="pipeline-node" id="node-3" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,0.01);">
-                <span style="font-size: 18px;">☁️</span>
-                <div style="flex:1;"><div style="font-weight: 500; font-size: 12px;">Node 3: Gemini Uploader</div></div>
-                <span class="node-status" id="node-3-status" style="font-size: 11.5px; color: var(--text-muted);">待機中</span>
-              </div>
-              <div class="pipeline-node" id="node-4" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,0.01);">
-                <span style="font-size: 18px;">📝</span>
-                <div style="flex:1;"><div style="font-weight: 500; font-size: 12px;">Node 4: Gemini Transcriber</div></div>
-                <span class="node-status" id="node-4-status" style="font-size: 11.5px; color: var(--text-muted);">待機中</span>
-              </div>
-              <div class="pipeline-node" id="node-5" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,0.01);">
-                <span style="font-size: 18px;">🧠</span>
-                <div style="flex:1;"><div style="font-weight: 500; font-size: 12px;">Node 5: Gemini Evaluator</div></div>
-                <span class="node-status" id="node-5-status" style="font-size: 11.5px; color: var(--text-muted);">待機中</span>
-              </div>
-              <div class="pipeline-node" id="node-6" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,0.01);">
-                <span style="font-size: 18px;">🔄</span>
-                <div style="flex:1;"><div style="font-weight: 500; font-size: 12px;">Node 6: Data Transformer</div></div>
-                <span class="node-status" id="node-6-status" style="font-size: 11.5px; color: var(--text-muted);">待機中</span>
-              </div>
-              <div class="pipeline-node" id="node-7" style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,0.01);">
-                <span style="font-size: 18px;">📤</span>
-                <div style="flex:1;"><div style="font-weight: 500; font-size: 12px;">Node 7: Output Connector</div></div>
-                <span class="node-status" id="node-7-status" style="font-size: 11.5px; color: var(--text-muted);">待機中</span>
+            <!-- Pipeline nodes arranged horizontally -->
+            <div class="pipeline-flow-container">
+              <div class="pipeline-flow">
+                <div class="pipeline-node" id="node-1">
+                  <div class="node-icon">📂</div>
+                  <div class="node-name">Node 1: Drive Trigger</div>
+                  <div class="node-status" id="node-1-status">待機中</div>
+                </div>
+                <div class="pipeline-arrow" id="arrow-1">➔</div>
+                <div class="pipeline-node" id="node-2">
+                  <div class="node-icon">🎵</div>
+                  <div class="node-name">Node 2: Audio Extractor</div>
+                  <div class="node-status" id="node-2-status">待機中</div>
+                </div>
+                <div class="pipeline-arrow" id="arrow-2">➔</div>
+                <div class="pipeline-node" id="node-3">
+                  <div class="node-icon">☁️</div>
+                  <div class="node-name">Node 3: Gemini Uploader</div>
+                  <div class="node-status" id="node-3-status">待機中</div>
+                </div>
+                <div class="pipeline-arrow" id="arrow-3">➔</div>
+                <div class="pipeline-node" id="node-4">
+                  <div class="node-icon">📝</div>
+                  <div class="node-name">Node 4: Gemini Transcriber</div>
+                  <div class="node-status" id="node-4-status">待機中</div>
+                </div>
+                <div class="pipeline-arrow" id="arrow-4">➔</div>
+                <div class="pipeline-node" id="node-5">
+                  <div class="node-icon">🧠</div>
+                  <div class="node-name">Node 5: Gemini Evaluator</div>
+                  <div class="node-status" id="node-5-status">待機中</div>
+                </div>
+                <div class="pipeline-arrow" id="arrow-5">➔</div>
+                <div class="pipeline-node" id="node-6">
+                  <div class="node-icon">🔄</div>
+                  <div class="node-name">Node 6: Data Transformer</div>
+                  <div class="node-status" id="node-6-status">待機中</div>
+                </div>
+                <div class="pipeline-arrow" id="arrow-6">➔</div>
+                <div class="pipeline-node" id="node-7">
+                  <div class="node-icon">📤</div>
+                  <div class="node-name">Node 7: Output Connector</div>
+                  <div class="node-status" id="node-7-status">待機中</div>
+                </div>
               </div>
             </div>
 

@@ -1167,3 +1167,13 @@ body::after {
 .muted-row {
   opacity: 0.6;
 }
+
+/* Custom Select Dropdown Options Styling for Dark Mode */
+select {
+  background-color: #111827 !important;
+  color: #f3f4f6 !important;
+}
+select option {
+  background-color: #111827 !important;
+  color: #f3f4f6 !important;
+}

@@ -513,13 +513,24 @@ function setupFirestoreRealtimeSync() {
   });
 }
 
-// ===== Navigation =====
+let currentFeedbackKey = '';
+
 function navigateTo(page) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
   const nav = document.getElementById('nav-' + page);
   if (nav) nav.classList.add('active');
+  
+  if (page === 'feedback') {
+    updateDetailSelects();
+    if (!currentFeedbackKey) {
+      const firstDoneVideo = VIDEOS_DATA.find(v => v.status === 'done');
+      if (firstDoneVideo) {
+        showFeedbackPage(firstDoneVideo.key);
+      }
+    }
+  }
 }
 
 document.querySelectorAll('.nav-item[data-page]').forEach(item => {
@@ -528,6 +539,7 @@ document.querySelectorAll('.nav-item[data-page]').forEach(item => {
 
 // ===== Show Feedback Page =====
 function showFeedbackPage(key) {
+  currentFeedbackKey = key;
   let fb = MOCK_FEEDBACKS[key];
   if (!fb) {
     // Fallback: If feedback is missing but the video status is done, recreate it dynamically from video info
