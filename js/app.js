@@ -3026,6 +3026,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupImportEvents();
   setupApiKeyEvents();
   setupVideosImportEvents();
+  
+  // Initialize custom styled dropdowns
+  makeCustomSelect('detailInterviewerSelect');
+  makeCustomSelect('detailVideoSelect');
+  makeCustomSelect('videoTableGroupFilter');
+  makeCustomSelect('settings-model-select');
 });
 
 function updateApiKeyStatus() {
@@ -3144,3 +3150,108 @@ function onDetailVideoChange() {
     showFeedbackPage(key);
   }
 }
+
+function makeCustomSelect(selectId) {
+  const nativeSelect = document.getElementById(selectId);
+  if (!nativeSelect) return;
+  
+  // Hide native select
+  nativeSelect.style.display = 'none';
+  
+  // Create or get wrapper
+  let wrapper = document.getElementById('custom-wrapper-' + selectId);
+  if (!wrapper) {
+    wrapper = document.createElement('div');
+    wrapper.className = 'custom-select-wrapper';
+    wrapper.id = 'custom-wrapper-' + selectId;
+    nativeSelect.parentNode.insertBefore(wrapper, nativeSelect.nextSibling);
+  }
+  
+  // Apply native dimensions/styles to custom wrapper
+  if (nativeSelect.style.minWidth) {
+    wrapper.style.minWidth = nativeSelect.style.minWidth;
+  }
+  if (nativeSelect.style.width) {
+    wrapper.style.width = nativeSelect.style.width;
+  }
+  
+  // Create HTML inside wrapper
+  wrapper.innerHTML = `
+    <div class="custom-select-trigger">
+      <span class="custom-select-value"></span>
+      <span class="custom-select-arrow">▾</span>
+    </div>
+    <div class="custom-select-options-list"></div>
+  `;
+  
+  const trigger = wrapper.querySelector('.custom-select-trigger');
+  const valueSpan = wrapper.querySelector('.custom-select-value');
+  const optionsList = wrapper.querySelector('.custom-select-options-list');
+  
+  // Function to sync native select to custom UI
+  function syncFromNative() {
+    if (nativeSelect.disabled) {
+      wrapper.classList.add('disabled');
+    } else {
+      wrapper.classList.remove('disabled');
+    }
+    
+    const selectedOption = nativeSelect.options[nativeSelect.selectedIndex];
+    valueSpan.textContent = selectedOption ? selectedOption.text : '選択してください...';
+    
+    optionsList.innerHTML = Array.from(nativeSelect.options).map((opt, index) => {
+      const isSelected = index === nativeSelect.selectedIndex;
+      const isDisabled = opt.disabled;
+      return `
+        <div class="custom-select-option ${isSelected ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}" 
+             data-value="${opt.value}" data-index="${index}">
+          ${opt.text}
+        </div>
+      `;
+    }).join('');
+  }
+  
+  // Run initial sync
+  syncFromNative();
+  
+  // Trigger click handler
+  trigger.addEventListener('click', (e) => {
+    if (nativeSelect.disabled) return;
+    e.stopPropagation();
+    
+    // Close all other dropdowns
+    document.querySelectorAll('.custom-select-wrapper').forEach(w => {
+      if (w !== wrapper) w.classList.remove('open');
+    });
+    
+    wrapper.classList.toggle('open');
+  });
+  
+  // Option selection handler
+  optionsList.addEventListener('click', (e) => {
+    const option = e.target.closest('.custom-select-option');
+    if (!option || option.classList.contains('disabled')) return;
+    
+    const index = parseInt(option.dataset.index);
+    nativeSelect.selectedIndex = index;
+    
+    // Dispatch change event to native select
+    nativeSelect.dispatchEvent(new Event('change'));
+    
+    wrapper.classList.remove('open');
+    syncFromNative();
+  });
+  
+  // MutationObserver to watch native changes
+  const observer = new MutationObserver(() => {
+    syncFromNative();
+  });
+  observer.observe(nativeSelect, { childList: true, attributes: true, subtree: true });
+}
+
+// Global click handler to close dropdowns when clicking outside
+document.addEventListener('click', () => {
+  document.querySelectorAll('.custom-select-wrapper').forEach(w => {
+    w.classList.remove('open');
+  });
+});
