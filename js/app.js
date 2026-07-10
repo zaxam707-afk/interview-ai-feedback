@@ -1892,7 +1892,7 @@ async function runPipelineStep(apiKey, isFast) {
           }
           
           let templateKey = 'tanaka';
-          if (selectedPresetKey) {
+          if (selectedPresetKey && MOCK_FEEDBACKS[selectedPresetKey]) {
             templateKey = selectedPresetKey;
           } else {
             const templateKeys = ['tanaka', 'suzuki', 'yamada', 'sato', 'takahashi', 'ito'];
@@ -1984,7 +1984,7 @@ async function runPipelineStep(apiKey, isFast) {
           }
           
           let templateKey = 'tanaka';
-          if (selectedPresetKey) {
+          if (selectedPresetKey && MOCK_FEEDBACKS[selectedPresetKey]) {
             templateKey = selectedPresetKey;
           } else {
             const templateKeys = ['tanaka', 'suzuki', 'yamada', 'sato', 'takahashi', 'ito'];
