@@ -3301,8 +3301,8 @@ function reanalyzeVideo(key) {
   renderVideosTable();
   updateDashboardMetrics();
   
-  // Navigate to AI Agent tab
-  navigateTo('agent');
+  // Navigate to Videos page
+  navigateTo('videos');
   
   // Reset pipeline if completed/running
   if (pipelineCompleted || pipelineRunning) {
