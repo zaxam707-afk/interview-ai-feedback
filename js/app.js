@@ -1715,6 +1715,15 @@ function startAgentPipeline() {
   pipelineRunning = true;
   pipelineCompleted = false;
   
+  if (currentAnalysisVideoKey) {
+    const video = VIDEOS_DATA.find(v => v.key === currentAnalysisVideoKey);
+    if (video) {
+      video.status = 'processing';
+      saveStateToLocalStorage();
+      renderVideosTable();
+    }
+  }
+  
   const btnRun = document.getElementById('btn-run-pipeline');
   const btnReset = document.getElementById('btn-reset-pipeline');
   const videoSelect = document.getElementById('agent-video-select');
@@ -2116,6 +2125,15 @@ function advancePipeline(apiKey, isFast) {
 function handlePipelineError(msg) {
   pipelineRunning = false;
   pipelineCompleted = false;
+  
+  if (currentAnalysisVideoKey) {
+    const video = VIDEOS_DATA.find(v => v.key === currentAnalysisVideoKey);
+    if (video) {
+      video.status = 'pending';
+      saveStateToLocalStorage();
+      renderVideosTable();
+    }
+  }
   
   logToConsole('error', `[ERROR] パイプラインの実行中にエラーが発生しました: ${msg}`);
   
