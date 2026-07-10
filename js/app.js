@@ -2459,12 +2459,9 @@ function updateGroupDropdowns() {
   const filterVal = filterSelect ? filterSelect.value : 'all';
   const historyVal = historySelect ? historySelect.value : 'all';
 
-  const groupsSet = new Set(['佐藤面接官', '高橋面接官', '伊藤面接官', 'その他']);
+  const groupsSet = new Set();
   VIDEOS_DATA.forEach(v => {
-    if (v.group) groupsSet.add(v.group);
-  });
-  HISTORY_DATA.forEach(h => {
-    if (h.group) groupsSet.add(h.group);
+    if (v.group && !v.hidden) groupsSet.add(v.group);
   });
 
   const uniqueGroups = Array.from(groupsSet).filter(g => g && g.trim() !== '');
