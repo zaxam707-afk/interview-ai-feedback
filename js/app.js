@@ -2520,7 +2520,9 @@ function renderVideosTable() {
     if (v.status === 'done') {
       statusBadge = `<span class="status-badge done">✓ 分析済み</span>`;
       scoreBadge = `<span class="grade-badge ${v.grade}">${v.grade}</span>`;
-      actionBtn = `<button class="btn btn-sm btn-secondary" onclick="showFeedbackPage('${v.key}')">詳細</button>` + deleteBtn;
+      actionBtn = `<button class="btn btn-sm btn-secondary" onclick="showFeedbackPage('${v.key}')">詳細</button>` +
+                  `<button class="btn btn-sm btn-primary" style="margin-left:8px;" onclick="reanalyzeVideo('${v.key}')">再分析</button>` +
+                  deleteBtn;
     } else if (v.status === 'processing') {
       statusBadge = `<span class="status-badge processing">⟳ 分析中...</span>`;
       scoreBadge = `—`;
@@ -3252,3 +3254,61 @@ document.addEventListener('click', () => {
     w.classList.remove('open');
   });
 });
+
+function reanalyzeVideo(key) {
+  const video = VIDEOS_DATA.find(v => v.key === key);
+  if (!video) return;
+  
+  if (!confirm(`「${video.name}」を再分析しますか？\n（現在の分析結果は上書きされます）`)) {
+    return;
+  }
+  
+  // Reset status to pending
+  video.status = 'pending';
+  video.score = null;
+  video.grade = '—';
+  
+  // Remove existing feedback from MOCK_FEEDBACKS
+  delete MOCK_FEEDBACKS[key];
+  if (firebaseDb) {
+    firebaseDb.collection("feedbacks").doc(key).delete()
+      .catch(err => console.error("Firestore feedback delete error:", err));
+  }
+  
+  // Save state (will sync status update to Firestore)
+  saveStateToLocalStorage();
+  
+  // Set active analysis video key
+  currentAnalysisVideoKey = key;
+  
+  // Pre-select file or preset
+  if (video.fileObject && video.fileObject instanceof File) {
+    importedFile = video.fileObject;
+    selectedPresetKey = null;
+  } else {
+    importedFile = null;
+    selectedPresetKey = key;
+  }
+  
+  // Update target display in AI agent tab
+  const targetEl = document.getElementById('active-analysis-target');
+  if (targetEl) {
+    targetEl.innerHTML = `分析対象: <strong>${video.name}</strong> (${video.group || '面接官未指定'})`;
+  }
+  
+  // Update views
+  updateGroupDropdowns();
+  renderVideosTable();
+  updateDashboardMetrics();
+  
+  // Navigate to AI Agent tab
+  navigateTo('agent');
+  
+  // Reset pipeline if completed/running
+  if (pipelineCompleted || pipelineRunning) {
+    resetAgentPipeline();
+  }
+  
+  // Start the pipeline immediately
+  startAgentPipeline();
+}
