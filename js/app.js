@@ -380,6 +380,7 @@ function saveStateToLocalStorage() {
         }
       }
     }
+    updateApiCostTracker();
   } catch (e) {
     console.error("Failed to save state:", e);
   }
@@ -459,6 +460,7 @@ function setupFirestoreRealtimeSync() {
       renderInterviewerTendencies();
       renderVideosTable();
       updateDashboardMetrics();
+      updateApiCostTracker();
     } catch (err) {
       console.error("Error in Firestore videos onSnapshot callback:", err);
     }
@@ -530,6 +532,8 @@ function navigateTo(page) {
         showFeedbackPage(firstDoneVideo.key);
       }
     }
+  } else if (page === 'settings') {
+    updateApiCostTracker();
   }
 }
 
@@ -2275,6 +2279,9 @@ function updatePreviewsWithResults(candidateKey) {
 function integrateResultsIntoApp(candidateKey) {
   const baseTitle = parsedResult.title.replace('.mp4', '').replace('.mp3', '');
   
+  const modelSelect = document.getElementById('settings-model-select');
+  const modelName = modelSelect ? modelSelect.value : 'gemini-2.5-pro';
+  
   const existingVideo = VIDEOS_DATA.find(v => v.key === candidateKey);
   const groupName = existingVideo ? (existingVideo.group || 'その他') : 'その他';
   if (existingVideo) {
@@ -2284,6 +2291,7 @@ function integrateResultsIntoApp(candidateKey) {
     existingVideo.isNew = false;
     existingVideo.hidden = false;
     existingVideo.group = groupName;
+    existingVideo.model = modelName;
     
     MOCK_FEEDBACKS[candidateKey] = parsedResult;
   } else {
@@ -2300,7 +2308,8 @@ function integrateResultsIntoApp(candidateKey) {
       score: parsedResult.total,
       isNew: false,
       hidden: false,
-      group: groupName
+      group: groupName,
+      model: modelName
     };
     VIDEOS_DATA.unshift(newVideo);
   }
@@ -3329,4 +3338,110 @@ function reanalyzeVideo(key) {
   
   // Start the pipeline immediately
   startAgentPipeline();
+}
+
+// ===== API Cost Tracker Helpers =====
+function getMonthKey(dateStr) {
+  if (!dateStr) return 'その他';
+  const cleaned = dateStr.replace(/-/g, '/');
+  const parts = cleaned.split('/');
+  if (parts.length >= 2) {
+    const year = parts[0].trim();
+    const month = parseInt(parts[1]).toString();
+    return `${year}年${month}月`;
+  }
+  return 'その他';
+}
+
+function parseDurationToMinutes(durationStr) {
+  if (!durationStr) return 30;
+  const match = durationStr.match(/(\d+)/);
+  return match ? parseInt(match[1]) : 30;
+}
+
+function updateApiCostTracker() {
+  const listEl = document.getElementById('cost-monthly-list');
+  const currentMonthValEl = document.getElementById('cost-current-month-val');
+  const currentMonthCountEl = document.getElementById('cost-current-month-count');
+  const totalValEl = document.getElementById('cost-total-val');
+  const totalCountEl = document.getElementById('cost-total-count');
+  const exchangeRateInput = document.getElementById('cost-exchange-rate');
+  if (!listEl) return;
+  
+  const exchangeRate = exchangeRateInput ? parseFloat(exchangeRateInput.value) || 150 : 150;
+  
+  const monthlyData = {};
+  let overallTotalCost = 0;
+  let overallTotalCount = 0;
+  
+  const now = new Date();
+  const currentMonthKey = `${now.getFullYear()}年${now.getMonth() + 1}月`;
+  
+  VIDEOS_DATA.forEach(v => {
+    if (v.status !== 'done') return;
+    
+    // Skip mock files (if it is a demo analysis)
+    const isMock = MOCK_FEEDBACKS[v.key] ? (MOCK_FEEDBACKS[v.key].isMock !== false) : true;
+    if (isMock) return;
+    
+    const monthKey = getMonthKey(v.date);
+    const minutes = parseDurationToMinutes(v.duration);
+    
+    // Estimate cost: Pro is ~4.0 JPY/min, Flash is ~0.4 JPY/min
+    const isFlash = v.model && v.model.includes('flash');
+    const ratePerMinute = isFlash ? (0.4 * (exchangeRate / 150)) : (4.0 * (exchangeRate / 150));
+    const cost = minutes * ratePerMinute;
+    
+    if (!monthlyData[monthKey]) {
+      monthlyData[monthKey] = { cost: 0, count: 0, minutes: 0 };
+    }
+    
+    monthlyData[monthKey].cost += cost;
+    monthlyData[monthKey].count += 1;
+    monthlyData[monthKey].minutes += minutes;
+    
+    overallTotalCost += cost;
+    overallTotalCount += 1;
+  });
+  
+  if (totalValEl) totalValEl.textContent = `¥${Math.round(overallTotalCost).toLocaleString('ja-JP')}`;
+  if (totalCountEl) totalCountEl.textContent = `分析数: ${overallTotalCount}本`;
+  
+  const currentMonthData = monthlyData[currentMonthKey] || { cost: 0, count: 0 };
+  if (currentMonthValEl) currentMonthValEl.textContent = `¥${Math.round(currentMonthData.cost).toLocaleString('ja-JP')}`;
+  if (currentMonthCountEl) currentMonthCountEl.textContent = `分析数: ${currentMonthData.count}本`;
+  
+  const monthsSorted = Object.keys(monthlyData).sort((a, b) => {
+    const parseMonth = (str) => {
+      const match = str.match(/(\d+)年(\d+)月/);
+      if (!match) return 0;
+      return parseInt(match[1]) * 12 + parseInt(match[2]);
+    };
+    return parseMonth(b) - parseMonth(a);
+  });
+  
+  const maxMonthCost = Math.max(...Object.values(monthlyData).map(m => m.cost), 1);
+  
+  if (monthsSorted.length === 0) {
+    listEl.innerHTML = `<div style="text-align:center; color:var(--text-muted); font-size:12px; padding:20px 0;">実績データはありません</div>`;
+  } else {
+    listEl.innerHTML = monthsSorted.map(mKey => {
+      const data = monthlyData[mKey];
+      const percent = Math.min(100, Math.max(5, (data.cost / maxMonthCost) * 100));
+      return `
+        <div style="background: rgba(255,255,255,0.01); padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); text-align: left;">
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; margin-bottom:4px;">
+            <span style="font-weight:600; color:var(--text-primary);">${mKey}</span>
+            <span style="font-weight:700; color:var(--accent-cyan);">¥${Math.round(data.cost).toLocaleString('ja-JP')}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--text-muted); margin-bottom:6px;">
+            <span>分析件数: ${data.count}件 (${data.minutes}分)</span>
+          </div>
+          <div style="width:100%; height:4px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden;">
+            <div style="width:${percent}%; height:100%; background:linear-gradient(90deg, var(--accent-cyan), var(--accent-purple)); border-radius:2px;"></div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
 }

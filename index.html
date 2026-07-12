@@ -563,6 +563,49 @@
             💡 ここにFirebaseの設定JSONを貼り付けると、他のメンバーと評価履歴やダッシュボードを共有できます。空欄の場合は従来通り自分のみ（ローカル保存）で動作します。
           </div>
         </div>
+
+        <!-- API Cost Tracker Card -->
+        <div class="card" id="api-cost-tracker-card">
+          <div class="card-header" style="justify-content: space-between;">
+            <div class="card-title">💰 API利用状況・コスト管理</div>
+            <span class="status-badge done" style="font-size:10px" id="cost-period-label">コスト追跡中</span>
+          </div>
+          
+          <!-- Summary Metrics -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; margin-top: 10px;">
+            <div style="background: rgba(255,255,255,0.02); padding: 12px; border-radius: 8px; border: 1px solid var(--border); text-align: center;">
+              <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">当月推定コスト (JPY)</div>
+              <div style="font-size: 20px; font-weight: 700; color: var(--accent-cyan);" id="cost-current-month-val">¥0</div>
+              <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px;" id="cost-current-month-count">分析数: 0本</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.02); padding: 12px; border-radius: 8px; border: 1px solid var(--border); text-align: center;">
+              <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">累計推定コスト (JPY)</div>
+              <div style="font-size: 20px; font-weight: 700; color: var(--accent-purple);" id="cost-total-val">¥0</div>
+              <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px;" id="cost-total-count">分析数: 0本</div>
+            </div>
+          </div>
+          
+          <!-- Month-by-month List -->
+          <div style="border-top: 1px solid var(--border); padding-top: 12px;">
+            <div style="font-size: 12.5px; font-weight: 600; color: var(--text-primary); margin-bottom: 10px; text-align: left;">月別コスト内訳</div>
+            <div id="cost-monthly-list" style="display: flex; flex-direction: column; gap: 10px; max-height: 150px; overflow-y: auto; padding-right: 4px;">
+              <!-- Monthly rows will go here -->
+            </div>
+          </div>
+          
+          <!-- Rates Config -->
+          <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--text-secondary);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span>換算レート (USD/JPY):</span>
+              <input type="number" id="cost-exchange-rate" value="150" style="width: 60px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font-size: 11.5px; text-align: center;" onchange="updateApiCostTracker()">
+            </div>
+            <div style="font-size: 10.5px; color: var(--text-muted); line-height: 1.4; text-align: left; margin-top: 8px;">
+              ※ コストは動画の長さ（分数）から概算されます。<br>
+              ・Proモデル: 約4.0円/分（120円/30分）<br>
+              ・Flashモデル: 約0.4円/分（12円/30分）
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="card mt-20">
