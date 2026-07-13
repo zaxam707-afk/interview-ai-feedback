@@ -482,6 +482,7 @@ function setupFirestoreRealtimeSync() {
         loadedFeedbacks[doc.id] = doc.data();
       });
       Object.assign(MOCK_FEEDBACKS, loadedFeedbacks);
+      updateApiCostTracker();
     } catch (err) {
       console.error("Error in Firestore feedbacks onSnapshot callback:", err);
     }
@@ -1687,6 +1688,22 @@ function proceedWithSimulationFromModal() {
   startAgentPipeline();
 }
 
+function closeFileMissingModal() {
+  const modal = document.getElementById('file-missing-confirm-modal');
+  if (modal) {
+    modal.classList.remove('active');
+    setTimeout(() => {
+      modal.style.display = 'none';
+    }, 250);
+  }
+}
+
+function proceedWithSimulationFromFileMissing() {
+  closeFileMissingModal();
+  simulationForceProceed = true;
+  startAgentPipeline();
+}
+
 function startAgentPipeline() {
   if (pipelineRunning) return;
   
@@ -1704,6 +1721,27 @@ function startAgentPipeline() {
   // Check if trying to run a custom file without an API key
   if (importedFile && !apiKey && !simulationForceProceed) {
     const modal = document.getElementById('simulation-confirm-modal');
+    if (modal) {
+      modal.style.display = 'flex';
+      setTimeout(() => {
+        modal.classList.add('active');
+      }, 10);
+    }
+    return;
+  }
+
+  // Check if we have an API key, but no local file in memory, and it's a custom/Drive video (not a preset):
+  const isPreset = ['sato', 'takahashi', 'ito'].includes(selectedPresetKey || currentAnalysisVideoKey);
+  if (apiKey && !importedFile && !isPreset && !simulationForceProceed) {
+    const modal = document.getElementById('file-missing-confirm-modal');
+    const video = VIDEOS_DATA.find(v => v.key === currentAnalysisVideoKey);
+    const fileName = video ? video.name : '動画ファイル';
+    
+    const nameEl = document.getElementById('file-missing-name');
+    const nameEl2 = document.getElementById('file-missing-name-2');
+    if (nameEl) nameEl.textContent = fileName;
+    if (nameEl2) nameEl2.textContent = fileName;
+    
     if (modal) {
       modal.style.display = 'flex';
       setTimeout(() => {
@@ -2675,6 +2713,7 @@ function updateDashboardMetrics() {
   
   renderDashboardRecentFeedback(group);
   updateDashboardTrendChart(group);
+  updateApiCostTracker();
 }
 
 function renderDashboardRecentFeedback(group = 'all') {
@@ -2787,6 +2826,29 @@ function setupVideosImportEvents() {
 }
 
 function handleVideosFileSelect(file) {
+  // Check if a video with the exact same name already exists in VIDEOS_DATA
+  const existingVideo = VIDEOS_DATA.find(v => v.name === file.name);
+  if (existingVideo) {
+    existingVideo.fileObject = file;
+    existingVideo.size = formatBytes(file.size);
+    
+    // Pre-select for the AI agent panel
+    currentAnalysisVideoKey = existingVideo.key;
+    importedFile = file;
+    selectedPresetKey = null;
+    
+    showToast('📁', `${file.name} の実体ファイルを設定しました。`);
+    saveStateToLocalStorage();
+    renderVideosTable();
+    
+    // Update target display in AI agent tab if it exists
+    const targetEl = document.getElementById('active-analysis-target');
+    if (targetEl) {
+      targetEl.innerHTML = `分析対象: <strong>${existingVideo.name}</strong> (${existingVideo.group || '面接官未指定'})`;
+    }
+    return;
+  }
+
   const fileKey = 'custom_' + Date.now();
   const newVideo = {
     key: fileKey,
@@ -3381,7 +3443,8 @@ function updateApiCostTracker() {
     if (v.status !== 'done') return;
     
     // Skip mock files (if it is a demo analysis)
-    const isMock = MOCK_FEEDBACKS[v.key] ? (MOCK_FEEDBACKS[v.key].isMock !== false) : true;
+    const fb = MOCK_FEEDBACKS[v.key];
+    const isMock = fb ? (fb.isMock === true) : !v.key.startsWith('custom_');
     if (isMock) return;
     
     const monthKey = getMonthKey(v.date);

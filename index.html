@@ -639,6 +639,24 @@
   </div>
 </div>
 
+<!-- File Missing Confirmation Modal -->
+<div id="file-missing-confirm-modal" class="modal-overlay">
+  <div class="modal" style="max-width: 480px; text-align: center;">
+    <div style="font-size: 40px; margin-bottom: 16px;">📁</div>
+    <div class="modal-title" style="margin-bottom: 12px; color: var(--accent-cyan);">音声ファイルの実体がありません</div>
+    <p style="color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; margin-bottom: 24px; text-align: left;">
+      Gemini APIキーは有効ですが、この動画ファイル（<strong id="file-missing-name" style="color: var(--accent-cyan);"></strong>）のバイナリデータがブラウザのメモリ内に存在しません。<br><br>
+      ※ ブラウザの更新（リロード）、別ブラウザからのアクセス、またはGoogle Drive自動検出のダミーファイルのため、実体ファイルが引き継がれていません。<br><br>
+      このまま実行すると、実際の音声解析は行われず、<strong>デモ用の模擬フィードバックデータ</strong>での進行となります。<br><br>
+      実際のAI音声解析を行うには、まず「録画一覧」タブのドロップエリアに対象のローカルファイル（<strong id="file-missing-name-2" style="color: var(--accent-cyan);"></strong>）をドラッグ＆ドロップして読み込ませてから分析・再分析を行ってください。
+    </p>
+    <div class="flex gap-12" style="justify-content: center; gap: 12px;">
+      <button class="btn btn-secondary" onclick="closeFileMissingModal()">キャンセル</button>
+      <button class="btn btn-primary" onclick="proceedWithSimulationFromFileMissing()" style="background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: #fff; border: none;">デモデータで実行</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="toast" id="toast">
   <span class="toast-icon" id="toastIcon">✅</span>
