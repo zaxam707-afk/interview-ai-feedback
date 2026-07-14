@@ -2582,20 +2582,36 @@ function renderVideosTable() {
   tbody.innerHTML = filteredVideos.map(v => {
     let deleteBtn = `<button class="btn btn-sm" style="background:transparent; border:none; padding:4px 8px; color:var(--accent-red); cursor:pointer; font-size:14px; margin-left:8px;" onclick="deleteVideo('${v.key}')" title="削除">🗑️</button>`;
     
+    const isPreset = ['sato', 'takahashi', 'ito'].includes(v.key);
+    const hasFile = v.fileObject && v.fileObject instanceof File;
+    const canProcess = isPreset || hasFile;
+    
     if (v.status === 'done') {
       statusBadge = `<span class="status-badge done">✓ 分析済み</span>`;
       scoreBadge = `<span class="grade-badge ${v.grade}">${v.grade}</span>`;
+      
+      const reanalyzeBtn = canProcess
+        ? `<button class="btn btn-sm btn-primary" style="margin-left:8px;" onclick="reanalyzeVideo('${v.key}')">再分析</button>`
+        : `<button class="btn btn-sm btn-secondary" style="margin-left:8px; opacity:0.5; cursor:not-allowed;" disabled title="再分析するには、同名の動画ファイルをドロップして紐付けてください。">再分析</button>`;
+        
       actionBtn = `<button class="btn btn-sm btn-secondary" onclick="showFeedbackPage('${v.key}')">詳細</button>` +
-                  `<button class="btn btn-sm btn-primary" style="margin-left:8px;" onclick="reanalyzeVideo('${v.key}')">再分析</button>` +
+                  reanalyzeBtn +
                   deleteBtn;
     } else if (v.status === 'processing') {
       statusBadge = `<span class="status-badge processing">⟳ 分析中...</span>`;
       scoreBadge = `—`;
-      actionBtn = `<button class="btn btn-sm btn-primary" disabled>🤖 分析</button>`;
+      actionBtn = `<button class="btn btn-sm btn-primary" disabled>🤖 分析</button>` +
+                  `<button class="btn btn-sm btn-secondary" style="margin-left:8px;" onclick="resetVideoStatusToPending('${v.key}')" title="分析ステータスをリセットして未分析に戻します">中止</button>` +
+                  deleteBtn;
     } else {
       statusBadge = `<span class="status-badge pending">● 未分析</span>`;
       scoreBadge = `—`;
-      actionBtn = `<button class="btn btn-sm btn-primary" onclick="simulateAnalyzeSingle(this)">🤖 分析</button>` + deleteBtn;
+      
+      const analyzeBtn = canProcess
+        ? `<button class="btn btn-sm btn-primary" onclick="simulateAnalyzeSingle(this)">🤖 分析</button>`
+        : `<button class="btn btn-sm btn-secondary" style="opacity:0.5; cursor:not-allowed;" disabled title="分析するには、同名の動画ファイルをドロップして紐付けてください。">🤖 分析</button>`;
+        
+      actionBtn = analyzeBtn + deleteBtn;
     }
     
     const isNewMarkup = v.isNew ? `<strong style="color:var(--accent-cyan)">NEW</strong>` : `Google Drive • 自動検出`;
@@ -3506,5 +3522,22 @@ function updateApiCostTracker() {
         </div>
       `;
     }).join('');
+  }
+}
+
+function resetVideoStatusToPending(key) {
+  if (!confirm('この動画の分析ステータスをリセットし、「未分析」に戻しますか？\n（すでに他の端末で実行中の場合は処理が停止します）')) {
+    return;
+  }
+  
+  const video = VIDEOS_DATA.find(v => v.key === key);
+  if (video) {
+    video.status = 'pending';
+    video.score = null;
+    video.grade = '—';
+    saveStateToLocalStorage();
+    renderVideosTable();
+    updateDashboardMetrics();
+    showToast('🔄', '分析ステータスをリセットしました');
   }
 }
