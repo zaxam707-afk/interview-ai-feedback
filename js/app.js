@@ -410,11 +410,24 @@ function setupFirestoreRealtimeSync() {
       });
       
       if (loadedVideos.length > 0) {
-        // Preserve local fileObjects in memory (only if they are valid File instances)
+        // Preserve local fileObjects and prevent status regression
         loadedVideos.forEach(lv => {
           const existing = VIDEOS_DATA.find(v => v.key === lv.key);
-          if (existing && existing.fileObject && existing.fileObject instanceof File) {
-            lv.fileObject = existing.fileObject;
+          if (existing) {
+            // Preserve local fileObjects in memory (only if they are valid File instances)
+            if (existing.fileObject && existing.fileObject instanceof File) {
+              lv.fileObject = existing.fileObject;
+            }
+            // Prevent Firestore snapshot from regressing a locally-completed 'done'
+            // back to 'processing'. This happens when the 'processing' write reaches
+            // Firestore first, triggers an onSnapshot, and the 'done' write hasn't
+            // arrived yet.
+            if (existing.status === 'done' && lv.status === 'processing') {
+              lv.status = existing.status;
+              lv.grade = existing.grade;
+              lv.score = existing.score;
+              lv.model = existing.model;
+            }
           }
         });
 
@@ -2228,12 +2241,18 @@ function finishPipeline() {
   logToConsole('success', `[SUCCESS] 全てのノードの実行が正常に完了しました！成果物が生成されました。`);
   showToast('✅', `${parsedResult.title} の評価・格納が完了しました！`);
   
-  // Resolve candidate key here to avoid duplicate rows and ensure same key is used everywhere
+  // Resolve candidate key: use the tracked currentAnalysisVideoKey which was set
+  // before the pipeline started and is always reliable. The old logic of searching
+  // for status === 'pending' was broken because startAgentPipeline already sets
+  // the video to 'processing', causing the lookup to fail and generating a
+  // duplicate key with 'custom_' + Date.now().
   let candidateKey = '';
-  if (importedFile) {
-    const existingPendingVideo = VIDEOS_DATA.find(v => v.name === importedFile.name && v.status === 'pending');
-    if (existingPendingVideo) {
-      candidateKey = existingPendingVideo.key;
+  if (currentAnalysisVideoKey) {
+    candidateKey = currentAnalysisVideoKey;
+  } else if (importedFile) {
+    const existingVideo = VIDEOS_DATA.find(v => v.name === importedFile.name);
+    if (existingVideo) {
+      candidateKey = existingVideo.key;
     } else {
       candidateKey = 'custom_' + Date.now();
     }
