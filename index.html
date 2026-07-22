@@ -43,7 +43,7 @@
 
 
     <div class="sidebar-footer">
-      <div class="version">v2.5.1 Demo ・ Powered by Gemini AI</div>
+      <div class="version">v2.5.2 Demo ・ Powered by Gemini AI</div>
     </div>
   </nav>
 
@@ -564,6 +564,22 @@
           </div>
         </div>
 
+        <!-- Data Recovery Card -->
+        <div class="card" id="data-recovery-card">
+          <div class="card-header">
+            <div class="card-title">🔧 データ復元ツール</div>
+          </div>
+          <div class="card-body" style="padding: 16px;">
+            <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:12px;">
+              過去のバグにより、分析結果が正しい動画レコードに紐付かず「迷子」になっている場合があります。<br>
+              このツールはFirestore上の迷子データを自動検出し、正しい動画に復元します。
+            </div>
+            <button class="btn btn-primary" onclick="recoverOrphanedFeedbacks()" style="width:100%;">
+              🔍 迷子データを検索して復元する
+            </button>
+          </div>
+        </div>
+
         <!-- API Cost Tracker Card -->
         <div class="card" id="api-cost-tracker-card">
           <div class="card-header" style="justify-content: space-between;">
@@ -667,6 +683,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
-<script src="js/app.js?v=2.5.1"></script>
+<script src="js/app.js?v=2.5.2"></script>
 </body>
 </html>

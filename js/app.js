@@ -3546,3 +3546,146 @@ function resetVideoStatusToPending(key) {
     showToast('🔄', '分析ステータスをリセットしました');
   }
 }
+
+// ===== Orphaned Feedback Recovery =====
+async function recoverOrphanedFeedbacks() {
+  if (!firebaseDb) {
+    showToast('⚠️', 'Firestore未接続のため復元できません。設定画面でFirebaseを接続してください。');
+    return;
+  }
+  
+  showToast('🔍', 'Firestoreから迷子の分析結果を検索中...');
+  
+  try {
+    // 1. Load all feedbacks from Firestore
+    const feedbacksSnap = await firebaseDb.collection("feedbacks").get();
+    const allFeedbacks = {};
+    feedbacksSnap.forEach(doc => {
+      allFeedbacks[doc.id] = doc.data();
+    });
+    
+    // 2. Load all videos from Firestore
+    const videosSnap = await firebaseDb.collection("videos").get();
+    const allVideoKeys = new Set();
+    const allVideos = {};
+    videosSnap.forEach(doc => {
+      allVideoKeys.add(doc.id);
+      allVideos[doc.id] = doc.data();
+    });
+    
+    // 3. Find orphaned feedbacks (feedback key doesn't match any video key)
+    const orphanedFeedbacks = {};
+    for (const fKey in allFeedbacks) {
+      if (!allVideoKeys.has(fKey)) {
+        orphanedFeedbacks[fKey] = allFeedbacks[fKey];
+      }
+    }
+    
+    const orphanCount = Object.keys(orphanedFeedbacks).length;
+    if (orphanCount === 0) {
+      showToast('ℹ️', '迷子の分析結果は見つかりませんでした。すべてのデータは正常に紐付いています。');
+      return;
+    }
+    
+    console.log(`[Recovery] Found ${orphanCount} orphaned feedback(s):`, Object.keys(orphanedFeedbacks));
+    
+    // 4. Try to match orphaned feedbacks to videos by title/name
+    let recoveredCount = 0;
+    let details = [];
+    
+    for (const orphanKey in orphanedFeedbacks) {
+      const feedback = orphanedFeedbacks[orphanKey];
+      const feedbackTitle = feedback.title || '';
+      
+      if (!feedbackTitle) {
+        console.log(`[Recovery] Skipping orphan ${orphanKey}: no title field`);
+        continue;
+      }
+      
+      // Find a matching video by name (exact or partial match)
+      let matchedVideoKey = null;
+      let matchedVideo = null;
+      
+      // Try exact match first
+      for (const vKey in allVideos) {
+        const video = allVideos[vKey];
+        if (video.name === feedbackTitle) {
+          matchedVideoKey = vKey;
+          matchedVideo = video;
+          break;
+        }
+      }
+      
+      // Try partial match (feedback title without extension vs video name)
+      if (!matchedVideoKey) {
+        const titleBase = feedbackTitle.replace(/\.(mp4|mp3|wav|m4a|webm)$/i, '');
+        for (const vKey in allVideos) {
+          const video = allVideos[vKey];
+          const videoBase = (video.name || '').replace(/\.(mp4|mp3|wav|m4a|webm)$/i, '');
+          if (titleBase && videoBase && (titleBase === videoBase || video.name.includes(titleBase) || feedbackTitle.includes(videoBase))) {
+            matchedVideoKey = vKey;
+            matchedVideo = video;
+            break;
+          }
+        }
+      }
+      
+      if (matchedVideoKey && matchedVideo) {
+        console.log(`[Recovery] Matched orphan "${orphanKey}" (title: "${feedbackTitle}") → video "${matchedVideoKey}" (name: "${matchedVideo.name}")`);
+        
+        // 5. Copy feedback to the correct video key
+        await firebaseDb.collection("feedbacks").doc(matchedVideoKey).set(feedback);
+        
+        // 6. Update the video's status to 'done' with score/grade from feedback
+        const grade = feedback.grade || 'C';
+        const score = feedback.total || 0;
+        await firebaseDb.collection("videos").doc(matchedVideoKey).update({
+          status: 'done',
+          grade: grade,
+          score: score,
+          isMock: feedback.isMock || false
+        });
+        
+        // 7. Delete the orphaned feedback document
+        await firebaseDb.collection("feedbacks").doc(orphanKey).delete();
+        
+        // 8. Update local state
+        MOCK_FEEDBACKS[matchedVideoKey] = feedback;
+        const localVideo = VIDEOS_DATA.find(v => v.key === matchedVideoKey);
+        if (localVideo) {
+          localVideo.status = 'done';
+          localVideo.grade = grade;
+          localVideo.score = score;
+        }
+        
+        recoveredCount++;
+        details.push(`「${feedbackTitle}」→ 復元完了`);
+      } else {
+        console.log(`[Recovery] No matching video found for orphan "${orphanKey}" (title: "${feedbackTitle}")`);
+        details.push(`「${feedbackTitle}」→ 対応する動画が見つかりません`);
+      }
+    }
+    
+    // 9. Refresh UI
+    if (recoveredCount > 0) {
+      saveStateToLocalStorage();
+      updateGroupDropdowns();
+      renderVideosTable();
+      updateDashboardMetrics();
+      renderHistoryList();
+    }
+    
+    // 10. Show result
+    const resultMsg = recoveredCount > 0
+      ? `✅ ${recoveredCount}件の分析結果を復元しました！\n\n${details.join('\n')}`
+      : `⚠️ 迷子の分析結果が${orphanCount}件見つかりましたが、対応する動画レコードが見つかりませんでした。\n\n${details.join('\n')}`;
+    
+    alert(resultMsg);
+    console.log('[Recovery] Complete:', resultMsg);
+    
+  } catch (err) {
+    console.error('[Recovery] Error:', err);
+    showToast('❌', `復元中にエラーが発生しました: ${err.message}`);
+  }
+}
+
