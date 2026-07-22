@@ -2601,20 +2601,11 @@ function renderVideosTable() {
   tbody.innerHTML = filteredVideos.map(v => {
     let deleteBtn = `<button class="btn btn-sm" style="background:transparent; border:none; padding:4px 8px; color:var(--accent-red); cursor:pointer; font-size:14px; margin-left:8px;" onclick="deleteVideo('${v.key}')" title="削除">🗑️</button>`;
     
-    const isPreset = ['sato', 'takahashi', 'ito'].includes(v.key);
-    const hasFile = v.fileObject && v.fileObject instanceof File;
-    const canProcess = isPreset || hasFile;
-    
     if (v.status === 'done') {
       statusBadge = `<span class="status-badge done">✓ 分析済み</span>`;
       scoreBadge = `<span class="grade-badge ${v.grade}">${v.grade}</span>`;
-      
-      const reanalyzeBtn = canProcess
-        ? `<button class="btn btn-sm btn-primary" style="margin-left:8px;" onclick="reanalyzeVideo('${v.key}')">再分析</button>`
-        : `<button class="btn btn-sm btn-secondary" style="margin-left:8px; opacity:0.5; cursor:not-allowed;" disabled title="再分析するには、同名の動画ファイルをドロップして紐付けてください。">再分析</button>`;
-        
       actionBtn = `<button class="btn btn-sm btn-secondary" onclick="showFeedbackPage('${v.key}')">詳細</button>` +
-                  reanalyzeBtn +
+                  `<button class="btn btn-sm btn-primary" style="margin-left:8px;" onclick="reanalyzeVideo('${v.key}')">再分析</button>` +
                   deleteBtn;
     } else if (v.status === 'processing') {
       statusBadge = `<span class="status-badge processing">⟳ 分析中...</span>`;
@@ -2625,12 +2616,7 @@ function renderVideosTable() {
     } else {
       statusBadge = `<span class="status-badge pending">● 未分析</span>`;
       scoreBadge = `—`;
-      
-      const analyzeBtn = canProcess
-        ? `<button class="btn btn-sm btn-primary" onclick="simulateAnalyzeSingle(this)">🤖 分析</button>`
-        : `<button class="btn btn-sm btn-secondary" style="opacity:0.5; cursor:not-allowed;" disabled title="分析するには、同名の動画ファイルをドロップして紐付けてください。">🤖 分析</button>`;
-        
-      actionBtn = analyzeBtn + deleteBtn;
+      actionBtn = `<button class="btn btn-sm btn-primary" onclick="simulateAnalyzeSingle(this)">🤖 分析</button>` + deleteBtn;
     }
     
     const isNewMarkup = v.isNew ? `<strong style="color:var(--accent-cyan)">NEW</strong>` : `Google Drive • 自動検出`;
