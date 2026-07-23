@@ -1526,7 +1526,25 @@ async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelNam
   }
 
   const json = await response.json();
-  const rawText = json.candidates[0].content.parts[0].text;
+  
+  // Defensive checks for unexpected API response structure
+  if (!json.candidates || json.candidates.length === 0) {
+    const blockReason = json.promptFeedback?.blockReason || '不明';
+    const safetyRatings = json.promptFeedback?.safetyRatings 
+      ? JSON.stringify(json.promptFeedback.safetyRatings.map(r => `${r.category}: ${r.probability}`))
+      : 'なし';
+    console.error('[Transcription] Empty candidates. Full response:', JSON.stringify(json).substring(0, 500));
+    throw new Error(`Gemini APIからの応答にテキストが含まれていません。ブロック理由: ${blockReason}、安全性評価: ${safetyRatings}。動画の形式や内容を確認してください。`);
+  }
+  
+  const candidate = json.candidates[0];
+  if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
+    const finishReason = candidate.finishReason || '不明';
+    console.error('[Transcription] No content parts. Candidate:', JSON.stringify(candidate).substring(0, 500));
+    throw new Error(`Gemini APIの応答にコンテンツがありません。終了理由: ${finishReason}。モデルが応答を生成できなかった可能性があります。`);
+  }
+  
+  const rawText = candidate.content.parts[0].text;
   
   // Parse plain text transcription to array of objects
   let cleanText = rawText.trim();
@@ -1670,7 +1688,22 @@ ${transcriptFormatted}
   }
 
   const json = await response.json();
-  const rawEvalText = json.candidates[0].content.parts[0].text;
+  
+  // Defensive checks for unexpected API response structure
+  if (!json.candidates || json.candidates.length === 0) {
+    const blockReason = json.promptFeedback?.blockReason || '不明';
+    console.error('[Evaluation] Empty candidates. Full response:', JSON.stringify(json).substring(0, 500));
+    throw new Error(`評価APIの応答にテキストが含まれていません。ブロック理由: ${blockReason}。文字起こしの内容を確認してください。`);
+  }
+  
+  const candidate = json.candidates[0];
+  if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
+    const finishReason = candidate.finishReason || '不明';
+    console.error('[Evaluation] No content parts. Candidate:', JSON.stringify(candidate).substring(0, 500));
+    throw new Error(`評価APIの応答にコンテンツがありません。終了理由: ${finishReason}。`);
+  }
+  
+  const rawEvalText = candidate.content.parts[0].text;
   const parsedEval = JSON.parse(rawEvalText);
   logToConsole('success', `[SUCCESS] 【第2段階完了】評価およびスコアリングのJSON結果を受信しました。`);
   return parsedEval;
