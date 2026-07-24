@@ -43,7 +43,7 @@
 
 
     <div class="sidebar-footer">
-      <div class="version">v2.5.3 Demo ・ Powered by Gemini AI</div>
+      <div class="version">v2.5.4 Demo ・ Powered by Gemini AI</div>
     </div>
   </nav>
 
@@ -577,6 +577,14 @@
             <button class="btn btn-primary" onclick="recoverOrphanedFeedbacks()" style="width:100%;">
               🔍 迷子データを検索して復元する
             </button>
+            <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+              <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:8px;">
+                デモ／シミュレーションで生成されたデータを削除します。実際にアップロード・分析した動画データは保持されます。
+              </div>
+              <button class="btn" onclick="cleanupDemoData()" style="width:100%; background:var(--accent-red); color:white; border:none;">
+                🧹 デモデータを削除する
+              </button>
+            </div>
           </div>
         </div>
 
@@ -683,6 +691,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
-<script src="js/app.js?v=2.5.3"></script>
+<script src="js/app.js?v=2.5.4"></script>
 </body>
 </html>

@@ -1509,7 +1509,8 @@ async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelNam
       }
     ],
     generationConfig: {
-      temperature: 0.0 // 決定論的な出力を強制し、ハルシネーションと要約を防ぐ
+      temperature: 0.0, // 決定論的な出力を強制し、ハルシネーションと要約を防ぐ
+      maxOutputTokens: 65536 // 30分以上の面接の全文字起こしに十分なトークン数を確保
     }
   };
 
@@ -1545,6 +1546,11 @@ async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelNam
   }
   
   const rawText = candidate.content.parts[0].text;
+  
+  // Warn if truncated but still use partial content
+  if (candidate.finishReason === 'MAX_TOKENS') {
+    logToConsole('error', `[WARNING] 文字起こしが出力トークン上限で途中打ち切りとなりました。取得できた部分のみで続行します。`);
+  }
   
   // Parse plain text transcription to array of objects
   let cleanText = rawText.trim();
@@ -1624,6 +1630,7 @@ ${transcriptFormatted}
     ],
     generationConfig: {
       temperature: 0.2, // 低温に設定して一貫した客観的評価を出力させる
+      maxOutputTokens: 65536,
       responseMimeType: "application/json",
       responseSchema: {
         type: "OBJECT",
@@ -3719,6 +3726,79 @@ async function recoverOrphanedFeedbacks() {
   } catch (err) {
     console.error('[Recovery] Error:', err);
     showToast('❌', `復元中にエラーが発生しました: ${err.message}`);
+  }
+}
+
+// ===== Demo Data Cleanup =====
+async function cleanupDemoData() {
+  // Identify demo records: isMock feedbacks, preset keys, and videos with isMock status
+  const PRESET_KEYS = ['sato', 'takahashi', 'ito'];
+  
+  const demoVideos = VIDEOS_DATA.filter(v => {
+    if (PRESET_KEYS.includes(v.key)) return true;
+    const fb = MOCK_FEEDBACKS[v.key];
+    if (fb && fb.isMock === true) return true;
+    return false;
+  });
+  
+  const realVideos = VIDEOS_DATA.filter(v => {
+    if (PRESET_KEYS.includes(v.key)) return false;
+    const fb = MOCK_FEEDBACKS[v.key];
+    if (fb && fb.isMock === true) return false;
+    return true;
+  });
+  
+  if (demoVideos.length === 0) {
+    showToast('ℹ️', 'デモデータは見つかりませんでした。');
+    return;
+  }
+  
+  const demoNames = demoVideos.map(v => v.name).join('\n  • ');
+  if (!confirm(`以下の ${demoVideos.length} 件のデモ／シミュレーションデータを削除します。\n\n  • ${demoNames}\n\n実際にアップロードした ${realVideos.length} 件の動画データは保持されます。\n\nよろしいですか？`)) {
+    return;
+  }
+  
+  showToast('🧹', 'デモデータを削除中...');
+  
+  try {
+    for (const v of demoVideos) {
+      // Remove from Firestore
+      if (firebaseDb) {
+        await firebaseDb.collection("videos").doc(v.key).delete().catch(e => console.warn('Video delete error:', e));
+        await firebaseDb.collection("feedbacks").doc(v.key).delete().catch(e => console.warn('Feedback delete error:', e));
+      }
+      // Remove from local state
+      delete MOCK_FEEDBACKS[v.key];
+    }
+    
+    // Remove preset feedbacks that are built-in demos
+    for (const pk of PRESET_KEYS) {
+      delete MOCK_FEEDBACKS[pk];
+    }
+    
+    // Rebuild VIDEOS_DATA keeping only real ones
+    VIDEOS_DATA = realVideos;
+    
+    // Rebuild HISTORY_DATA
+    HISTORY_DATA = VIDEOS_DATA.filter(v => v.status === 'done').map(v => ({
+      key: v.key,
+      date: v.date || new Date().toLocaleDateString('ja-JP'),
+      name: (v.name ? extractCandidateName(v.name) : '不明な候補者') + '面接官',
+      score: v.score || 0,
+      grade: v.grade || 'C',
+      group: v.group || 'その他'
+    }));
+    
+    saveStateToLocalStorage();
+    updateGroupDropdowns();
+    renderVideosTable();
+    updateDashboardMetrics();
+    renderHistoryList();
+    
+    showToast('✅', `${demoVideos.length} 件のデモデータを削除しました。`);
+  } catch (err) {
+    console.error('[Cleanup] Error:', err);
+    showToast('❌', `削除中にエラー: ${err.message}`);
   }
 }
 
