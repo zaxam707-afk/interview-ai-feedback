@@ -1461,18 +1461,14 @@ async function pollFileStatus(fileMetadata, apiKey) {
 }
 
 async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelName) {
-  // 音声の文字起こし（Node 4）は思考プロセスが不要な転写タスクです。
-  // gemini-2.5-pro 等の思考モデルを文字起こしに使うと「思考トークン」で出力上限（MAX_TOKENS）に達し応答が空になるため、
-  // 文字起こしには超高速・大容量出力に特化した gemini-1.5-flash / gemini-2.0-flash を使用します。
-  let transcribeModel = 'gemini-1.5-flash';
-  if (modelName && (modelName.includes('1.5') || modelName.includes('2.0'))) {
-    transcribeModel = modelName;
+  // 文字起こし用の候補モデルリスト（順に自動試行）
+  const candidateModels = [];
+  if (modelName && (modelName.includes('2.0') || modelName.includes('1.5') || modelName.includes('2.5'))) {
+    candidateModels.push(modelName);
   }
-
-  logToConsole('info', `[INFO] 【文字起こし】音声データから話者分離付きの文字起こしを生成中 (使用モデル: ${transcribeModel})...`);
-  logToConsole('cmd', `> curl -X POST "https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=..." \\`);
-  logToConsole('cmd', `    -H "Content-Type: application/json" \\`);
-  logToConsole('cmd', `    -d '{"contents": [{"parts": [{"file_data": {"file_uri": "${fileUri}", "mime_type": "${mimeType}"}}, {"text": "文字起こしプロンプト"}]}]}'`);
+  ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash'].forEach(m => {
+    if (!candidateModels.includes(m)) candidateModels.push(m);
+  });
 
   const transcriptionPrompt = `あなたは面接の文字起こし・話者分離システムです。
 提供された音声ファイルを分析し、面接官と応募者の会話内容をタイムスタンプ付きで順番に書き起こしてください。
@@ -1486,67 +1482,71 @@ async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelNam
 3. 挨拶、自己紹介、質疑応答の一連の流れを正確に記録してください。
 4. 余計な解説やスコアは含めず、書き起こしテキストのみを出力してください。`;
 
-  const transcriptionRequestBody = {
-    contents: [
-      {
-        parts: [
-          {
-            file_data: {
-              mime_type: mimeType,
-              file_uri: fileUri
-            }
-          },
-          {
-            text: transcriptionPrompt
-          }
-        ]
-      }
-    ],
-    generationConfig: {
-      temperature: 0.0,
-      maxOutputTokens: 8192
-    }
-  };
-
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(transcriptionRequestBody)
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    console.warn(`Gemini transcription call with ${transcribeModel} failed:`, errText);
-    logToConsole('error', `[WARNING] ${transcribeModel} での文字起こし呼び出しに失敗しました。フォールバック処理を実行します。`);
-    // Fallback: Return structured placeholder to let pipeline continue cleanly
-    return [
-      { time: '00:05', speaker: '面接官', text: '本日は面接にお越しいただきありがとうございます。自己紹介をお願いします。' },
-      { time: '00:15', speaker: '応募者', text: 'よろしくお願いいたします。これまでの経歴と自己PRをお話しさせていただきます。' },
-      { time: '05:00', speaker: '面接官', text: 'ありがとうございます。これまでのプロジェクトで最も成果を上げた経験について教えてください。' },
-      { time: '05:30', speaker: '応募者', text: '前職での新規事業立ち上げにおいて、チームリーダーとして目標達成に貢献いたしました。' }
-    ];
-  }
-
-  const json = await response.json();
-  
+  let lastError = null;
   let rawText = "";
-  if (json.candidates && json.candidates.length > 0) {
-    const candidate = json.candidates[0];
-    if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
-      rawText = candidate.content.parts[0].text || "";
+  let usedModel = "";
+
+  for (const transcribeModel of candidateModels) {
+    logToConsole('info', `[INFO] 【文字起こし】音声データから話者分離付きの文字起こしを生成中 (使用モデル: ${transcribeModel})...`);
+    logToConsole('cmd', `> curl -X POST "https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=..."`);
+
+    const transcriptionRequestBody = {
+      contents: [
+        {
+          parts: [
+            {
+              file_data: {
+                mime_type: mimeType,
+                file_uri: fileUri
+              }
+            },
+            {
+              text: transcriptionPrompt
+            }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.0,
+        maxOutputTokens: 8192
+      }
+    };
+
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(transcriptionRequestBody)
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        console.warn(`Gemini transcription call with ${transcribeModel} failed (${response.status}):`, errText);
+        logToConsole('error', `[WARNING] ${transcribeModel} での呼び出し失敗 (${response.status})。次のモデルを試行します...`);
+        lastError = new Error(`API Error (${response.status}): ${errText.substring(0, 200)}`);
+        continue;
+      }
+
+      const json = await response.json();
+      if (json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts) {
+        rawText = json.candidates[0].content.parts.map(p => p.text || "").join("\n").trim();
+        if (rawText) {
+          usedModel = transcribeModel;
+          break;
+        }
+      }
+      
+      logToConsole('error', `[WARNING] ${transcribeModel} の応答が空でした。次のモデルを試行します...`);
+    } catch (err) {
+      console.warn(`Exception calling ${transcribeModel}:`, err);
+      lastError = err;
     }
   }
 
   if (!rawText || rawText.trim() === "") {
-    logToConsole('error', `[WARNING] Gemini APIからの文字起こしテキストが空でした。デフォルト会話データで評価へ進みます。`);
-    return [
-      { time: '00:05', speaker: '面接官', text: '本日は面接にお越しいただきありがとうございます。自己紹介をお願いします。' },
-      { time: '00:15', speaker: '応募者', text: 'よろしくお願いいたします。これまでの経歴と自己PRをお話しさせていただきます。' },
-      { time: '05:00', speaker: '面接官', text: 'ありがとうございます。これまでのプロジェクトで最も成果を上げた経験について教えてください。' },
-      { time: '05:30', speaker: '応募者', text: '前職での新規事業立ち上げにおいて、チームリーダーとして目標達成に貢献いたしました。' }
-    ];
+    throw new Error(`全Geminiモデルでの文字起こし生成に失敗しました。詳細: ${lastError ? lastError.message : '応答テキストが空でした'}`);
   }
   
   // Parse plain text transcription to array of objects
@@ -1679,51 +1679,59 @@ ${transcriptFormatted}
     }
   };
 
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(evaluationRequestBody)
-    });
+  const evalModels = [];
+  if (modelName) evalModels.push(modelName);
+  ['gemini-2.5-pro', 'gemini-1.5-pro', 'gemini-2.0-flash'].forEach(m => {
+    if (!evalModels.includes(m)) evalModels.push(m);
+  });
 
-    if (!response.ok) {
-      throw new Error(`Gemini evaluation API error: ${response.status}`);
-    }
+  let lastEvalErr = null;
 
-    const json = await response.json();
-    let rawEvalText = "";
-    if (json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts) {
-      rawEvalText = json.candidates[0].content.parts[0].text || "";
+  for (const evalModel of evalModels) {
+    try {
+      logToConsole('info', `[INFO] 【評価＆スコアリング】生成された文字起こしテキストのみに基づいて評価を実行中 (使用モデル: ${evalModel})...`);
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${evalModel}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(evaluationRequestBody)
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        console.warn(`Evaluation API call with ${evalModel} failed (${response.status}):`, errText);
+        logToConsole('error', `[WARNING] ${evalModel} での評価呼び出し失敗 (${response.status})。次のモデルを試行します...`);
+        lastEvalErr = new Error(`API Error (${response.status}): ${errText.substring(0, 200)}`);
+        continue;
+      }
+
+      const json = await response.json();
+      let rawEvalText = "";
+      if (json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts) {
+        rawEvalText = json.candidates[0].content.parts.map(p => p.text || "").join("\n").trim();
+      }
+      
+      if (rawEvalText) {
+        // Clean JSON markdown blocks if any
+        if (rawEvalText.startsWith('```')) {
+          const lines = rawEvalText.split('\n');
+          if (lines[0].startsWith('```')) lines.shift();
+          if (lines[lines.length - 1] === '```') lines.pop();
+          rawEvalText = lines.join('\n').trim();
+        }
+        
+        const parsedEval = JSON.parse(rawEvalText);
+        logToConsole('success', `[SUCCESS] 【第2段階完了】評価およびスコアリングのJSON結果を受信しました (モデル: ${evalModel})。`);
+        return parsedEval;
+      }
+    } catch (err) {
+      console.warn(`Evaluation attempt with ${evalModel} failed:`, err);
+      lastEvalErr = err;
     }
-    
-    if (rawEvalText) {
-      const parsedEval = JSON.parse(rawEvalText);
-      logToConsole('success', `[SUCCESS] 【第2段階完了】評価およびスコアリングのJSON結果を受信しました。`);
-      return parsedEval;
-    }
-  } catch (err) {
-    console.warn("Evaluation API error or JSON parse failure, using fallback evaluation:", err);
-    logToConsole('error', `[WARNING] 評価APIの解析で例外が発生したため、標準評価テンプレートで分析を継続します。`);
   }
 
-  // Default fallback evaluation
-  return {
-    evaluation: {
-      icebreak_listening: { score: 4, reason: "応募者の緊張を和らげる温かいアイスブレイクと丁寧な傾聴が行えています。" },
-      question_deepening: { score: 4, reason: "過去の具体的なプロジェクト経験について適切な質問で深掘りできています。" },
-      attract_structure: { score: 4, reason: "会社の魅力や今後の展望について分かりやすく構造立てて説明できています。" }
-    },
-    overall_feedback: "全体的に非常にバランスの取れた素晴らしい面接です。応募者の本音を引き出しつつ会社の魅力も的確にアピールできています。",
-    good_points: [
-      "応募者の話を遮らず最後まで傾聴できている点",
-      "具体的行動を引き出す深掘り質問が構成されている点"
-    ],
-    improvement_points: [
-      "次ステップの選考プロセスの案内をもう少し具体的に伝えるとさらに良くなります"
-    ]
-  };
+  throw new Error(`全Geminiモデルでの評価生成に失敗しました。詳細: ${lastEvalErr ? lastEvalErr.message : '応答JSONが解析できませんでした'}`);
 }
 
 let simulationForceProceed = false;
