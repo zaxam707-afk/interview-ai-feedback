@@ -1379,7 +1379,7 @@ async function uploadFileToGemini(file, apiKey) {
   logToConsole('cmd', `    -H "X-Goog-Upload-Protocol: resumable" \\`);
   logToConsole('cmd', `    -H "X-Goog-Upload-Command: start" \\`);
   logToConsole('cmd', `    -H "X-Goog-Upload-Header-Content-Length: ${file.size}" \\`);
-  logToConsole('cmd', `    -H "X-Goog-Upload-Header-Content-Type: ${file.type}"`);
+  logToConsole('cmd', `    -H "X-Goog-Upload-Header-Content-Type: ${file.type || 'video/mp4'}"`);
 
   const initUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`;
   const initResponse = await fetch(initUrl, {
@@ -1388,7 +1388,7 @@ async function uploadFileToGemini(file, apiKey) {
       'X-Goog-Upload-Protocol': 'resumable',
       'X-Goog-Upload-Command': 'start',
       'X-Goog-Upload-Header-Content-Length': file.size.toString(),
-      'X-Goog-Upload-Header-Content-Type': file.type || 'application/octet-stream',
+      'X-Goog-Upload-Header-Content-Type': file.type || 'video/mp4',
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
@@ -1409,24 +1409,45 @@ async function uploadFileToGemini(file, apiKey) {
   }
 
   logToConsole('info', `[INFO] アップロードセッション初期化成功。`);
-  logToConsole('info', `[INFO] ファイルのアップロードを開始します (${formatBytes(file.size)})...`);
+  logToConsole('info', `[INFO] 大容量ファイル用チャンク分割アップロードを開始します (合計サイズ: ${formatBytes(file.size)})...`);
 
-  const uploadResponse = await fetch(uploadUrl, {
-    method: 'POST',
-    headers: {
-      'X-Goog-Upload-Offset': '0',
-      'X-Goog-Upload-Command': 'upload, finalize'
-    },
-    body: file
-  });
+  // 8MB チャンクごとに分割してアップロード（ブラウザのメモリ・通信上限での Failed to fetch 防止）
+  const chunkSize = 8 * 1024 * 1024;
+  let offset = 0;
+  let fileMetadata = null;
 
-  if (!uploadResponse.ok) {
-    const errorText = await uploadResponse.text();
-    throw new Error(`Upload failed: ${errorText}`);
+  while (offset < file.size) {
+    const end = Math.min(offset + chunkSize, file.size);
+    const chunk = file.slice(offset, end);
+    const isLastChunk = (end === file.size);
+    const command = isLastChunk ? 'upload, finalize' : 'upload';
+
+    const percent = Math.round((offset / file.size) * 100);
+    logToConsole('system', `[SYSTEM] アップロード中... ${percent}% (${formatBytes(offset)} / ${formatBytes(file.size)})`);
+
+    const chunkResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        'X-Goog-Upload-Offset': offset.toString(),
+        'X-Goog-Upload-Command': command,
+        'Content-Type': file.type || 'application/octet-stream'
+      },
+      body: chunk
+    });
+
+    if (!chunkResponse.ok) {
+      const errorText = await chunkResponse.text();
+      throw new Error(`Chunk upload failed at offset ${offset}: ${errorText}`);
+    }
+
+    if (isLastChunk) {
+      fileMetadata = await chunkResponse.json();
+    }
+
+    offset = end;
   }
 
-  const fileMetadata = await uploadResponse.json();
-  logToConsole('success', `[SUCCESS] アップロード完了。File Name: ${fileMetadata.file.name}`);
+  logToConsole('success', `[SUCCESS] チャンク分割アップロード100%完了。 File Name: ${fileMetadata.file.name}`);
   return fileMetadata.file;
 }
 
