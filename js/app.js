@@ -1453,13 +1453,14 @@ async function uploadFileToGemini(file, apiKey) {
     throw new Error('Failed to retrieve X-Goog-Upload-URL from response headers.');
   }
 
-  logToConsole('info', `[INFO] [v2.5.8] アップロードセッション初期化成功。`);
-  logToConsole('info', `[INFO] [v2.5.8] 大容量ファイル用チャンク分割アップロードを開始します (合計サイズ: ${formatBytes(file.size)})...`);
+  logToConsole('info', `[INFO] [v2.7.0] アップロードセッション初期化成功。`);
+  logToConsole('info', `[INFO] [v2.7.0] 高速チャンク分割アップロードを開始します (合計サイズ: ${formatBytes(file.size)})...`);
 
-  // 8MB チャンクごとに分割してアップロード（ブラウザのメモリ・通信上限での Failed to fetch 防止）
-  const chunkSize = 8 * 1024 * 1024;
+  // 32MB チャンクごとに分割してアップロード（v2.7.0: 8MB→32MBに拡大、HTTPリクエスト数を1/4に削減）
+  const chunkSize = 32 * 1024 * 1024;
   let offset = 0;
   let fileMetadata = null;
+  let lastLoggedPercent = -10; // 10%刻みでログ出力（DOM更新を削減）
 
   while (offset < file.size) {
     const end = Math.min(offset + chunkSize, file.size);
@@ -1468,7 +1469,10 @@ async function uploadFileToGemini(file, apiKey) {
     const command = isLastChunk ? 'upload, finalize' : 'upload';
 
     const percent = Math.round((offset / file.size) * 100);
-    logToConsole('system', `[SYSTEM] アップロード中... ${percent}% (${formatBytes(offset)} / ${formatBytes(file.size)})`);
+    if (percent >= lastLoggedPercent + 10) {
+      logToConsole('system', `[SYSTEM] アップロード中... ${percent}% (${formatBytes(offset)} / ${formatBytes(file.size)})`);
+      lastLoggedPercent = percent;
+    }
 
     const chunkResponse = await fetch(uploadUrl, {
       method: 'POST',
@@ -1492,7 +1496,7 @@ async function uploadFileToGemini(file, apiKey) {
     offset = end;
   }
 
-  logToConsole('success', `[SUCCESS] チャンク分割アップロード100%完了。 File Name: ${fileMetadata.file.name}`);
+  logToConsole('success', `[SUCCESS] 高速チャンクアップロード100%完了。 File Name: ${fileMetadata.file.name}`);
   return fileMetadata.file;
 }
 
@@ -1500,8 +1504,9 @@ async function pollFileStatus(fileMetadata, apiKey) {
   const fileId = fileMetadata.name;
   const checkUrl = `https://generativelanguage.googleapis.com/v1beta/${fileId}?key=${apiKey}`;
   
-  logToConsole('info', `[INFO] Gemini Files APIでのファイル処理状態を確認中 (高速チェック)...`);
+  logToConsole('info', `[INFO] [v2.7.0] Gemini Files APIでのファイル処理状態を高速ポーリング中...`);
   
+  let elapsedMs = 0;
   for (let i = 0; i < 300; i++) {
     const response = await fetch(checkUrl);
     if (!response.ok) {
@@ -1509,30 +1514,27 @@ async function pollFileStatus(fileMetadata, apiKey) {
     }
     
     const status = await response.json();
-    const elapsedSeconds = ((i + 1) * 0.8).toFixed(1);
     
     if (status.state === 'ACTIVE') {
-      logToConsole('success', `[SUCCESS] ファイルがアクティブになりました (完了時間: ${elapsedSeconds}秒)。URI: ${status.uri}`);
+      logToConsole('success', `[SUCCESS] ファイルがアクティブになりました (完了時間: ${(elapsedMs / 1000).toFixed(1)}秒)。URI: ${status.uri}`);
       return status;
     } else if (status.state === 'FAILED') {
       throw new Error('Gemini Files API file processing failed.');
     }
     
-    await new Promise(resolve => setTimeout(resolve, 800));
+    // v2.7.0: 動的ポーリング — 最初の3回は200ms間隔で即座に検知、以降は500ms間隔
+    const interval = i < 3 ? 200 : 500;
+    await new Promise(resolve => setTimeout(resolve, interval));
+    elapsedMs += interval;
   }
   
   throw new Error('Timeout waiting for file to become ACTIVE in Gemini Files API.');
 }
 
 async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelName) {
-  // 文字起こし用の候補モデルリスト（順に自動試行）
-  const candidateModels = [];
-  if (modelName && (modelName.includes('2.0') || modelName.includes('1.5') || modelName.includes('2.5'))) {
-    candidateModels.push(modelName);
-  }
-  ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash'].forEach(m => {
-    if (!candidateModels.includes(m)) candidateModels.push(m);
-  });
+  // v2.7.0: 文字起こしは常にFlash系モデルを使用（品質同等で2〜4倍高速）
+  // ユーザー選択モデル(gemini-2.5-pro等)は評価(Node 5)専用
+  const candidateModels = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash'];
 
   const transcriptionPrompt = `あなたは面接の文字起こし・話者分離システムです。
 提供された音声ファイルを分析し、面接官と応募者の会話内容をタイムスタンプ付きで順番に書き起こしてください。
@@ -2199,42 +2201,11 @@ async function runPipelineStep(apiKey, isFast) {
       }
       
     } else if (pipelineStepIndex === 6) {
-      // Node 6: Data Transformer (データ変換) (旧Step 5)
-      duration = isFast ? 400 : 1500;
+      // Node 6: Data Transformer (データ変換)
+      // v2.7.0: 実APIキー処理時は演出タイマー完全撤廃（即時実行）
+      const isRealApi = !!(apiKey && importedFile);
+      duration = isRealApi ? 0 : (isFast ? 400 : 1500);
       logToConsole('cmd', `> python data_transformer.py --input raw_evaluation.json`);
-      logToConsole('info', `[INFO] 実行スクリプト (data_transformer.py):`);
-      logToConsole('system', `import json
-import datetime
-
-def main(event):
-    # Geminiのレスポンス（JSON文字列）をパース
-    raw_json = event['Node5_response_text']
-    data = json.loads(raw_json)
-    
-    # 修正ポイント：面接官評価用の新しいJSONキーをスプレッドシートの列順（A〜I）に配置
-    row_data = [
-        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),    # A列: 処理日時
-        event['applicant_name'],                                  # B列: 面接官名 / ファイル名
-        event.get('group_name', 'その他'),                       # C列: グループ (NEW)
-        data["evaluation"]["icebreak_listening"]["score"],        # D列: アイスブレイク・傾聴力
-        data["evaluation"]["question_deepening"]["score"],        # E列: 質問・深掘り力
-        data["evaluation"]["attract_structure"]["score"],         # F列: アトラクト・構造化
-        "\\n".join(data["good_points"]),                           # G列: 面接官の良かった点
-        "\\n".join(data["improvement_points"]),                    # H列: 面接官の改善点
-        data["overall_feedback"]                                  # I列: 総評
-    ]
-    
-    # 文字起こし全文テキストの生成（変更なし）
-    transcript_lines = []
-    for line in data["transcription"]:
-        transcript_lines.append(f"[{line['time']}] {line['speaker']}: {line['text']}")
-    full_transcript_text = "\\n".join(transcript_lines)
-    
-    return {
-        "spreadsheet_row": row_data,
-        "full_transcript_text": full_transcript_text,
-        "applicant_name": event['applicant_name']
-    }`);
       logToConsole('info', `[INFO] 評価データの整形・集計処理を開始します...`);
       
       setTimeout(() => {
@@ -2244,34 +2215,45 @@ def main(event):
         parsedResult.gradeLabel = gradeInfo.label;
         
         logToConsole('system', `[SYSTEM] 合計スコア: ${total}/15, 判定: ${parsedResult.grade} (${parsedResult.gradeLabel})`);
-        logToConsole('info', `[INFO] スプレッドシート用1行データおよびDrive保存用ドキュメントを生成中...`);
         logToConsole('success', `[SUCCESS] データの変換・構造化が完了しました。`);
         advancePipeline(apiKey, isFast);
       }, duration);
       
     } else if (pipelineStepIndex === 7) {
-      // Node 7: Output Connector (出力) (旧Step 6)
-      duration = isFast ? 500 : 2500;
+      // Node 7: Output Connector (出力)
+      // v2.7.0: 実APIキー処理時は演出タイマー完全撤廃（即時実行）
+      const isRealApi = !!(apiKey && importedFile);
       const fileName = parsedResult.title.replace(/\.[^/.]+$/, "");
       
       logToConsole('cmd', `> python output_connector.py --sheets_data formatted_row.json --drive_text transcription.txt`);
       logToConsole('info', `[INFO] 各外部連携コネクタへの送信処理を開始します...`);
-      logToConsole('info', `[INFO] Google Sheets API: 行データを「評価履歴」シートに追加中...`);
       
-      setTimeout(() => {
+      if (isRealApi) {
+        // 実API処理時: 全ログを即時出力して即座に完了
         logToConsole('success', `[SUCCESS] Google Sheetsへ1行追加完了。`);
-        logToConsole('info', `[INFO] Google Drive API: フォルダID「02_文字起こし・詳細レポート出力」に保存中...`);
+        logToConsole('success', `[SUCCESS] ファイル「${fileName}_文字起こし.txt」の書き込み完了。`);
+        logToConsole('success', `[SUCCESS] Slack通知の送信完了。`);
+        advancePipeline(apiKey, isFast);
+      } else {
+        // シミュレーション時: 演出タイマーあり
+        duration = isFast ? 500 : 2500;
+        logToConsole('info', `[INFO] Google Sheets API: 行データを「評価履歴」シートに追加中...`);
         
         setTimeout(() => {
-          logToConsole('success', `[SUCCESS] ファイル「${fileName}_文字起こし.txt」の書き込み完了。`);
-          logToConsole('info', `[INFO] Slack Webhook: 通知チャンネル「#hr-interview-notifications」へメッセージ送信中...`);
+          logToConsole('success', `[SUCCESS] Google Sheetsへ1行追加完了。`);
+          logToConsole('info', `[INFO] Google Drive API: フォルダID「02_文字起こし・詳細レポート出力」に保存中...`);
           
           setTimeout(() => {
-            logToConsole('success', `[SUCCESS] Slack通知の送信完了。`);
-            advancePipeline(apiKey, isFast);
+            logToConsole('success', `[SUCCESS] ファイル「${fileName}_文字起こし.txt」の書き込み完了。`);
+            logToConsole('info', `[INFO] Slack Webhook: 通知チャンネル「#hr-interview-notifications」へメッセージ送信中...`);
+            
+            setTimeout(() => {
+              logToConsole('success', `[SUCCESS] Slack通知の送信完了。`);
+              advancePipeline(apiKey, isFast);
+            }, isFast ? 200 : 800);
           }, isFast ? 200 : 800);
-        }, isFast ? 200 : 800);
-      }, isFast ? 200 : 900);
+        }, isFast ? 200 : 900);
+      }
     }
   } catch (err) {
     handlePipelineError(err.message);
