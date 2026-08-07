@@ -1533,8 +1533,8 @@ async function pollFileStatus(fileMetadata, apiKey) {
 
 async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelName) {
   // v2.7.0: 文字起こしは常にFlash系モデルを使用（品質同等で2〜4倍高速）
-  // ユーザー選択モデル(gemini-2.5-pro等)は評価(Node 5)専用
-  const candidateModels = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash'];
+  // ユーザー選択モデル(gemini-3.6-pro等)は評価(Node 5)専用
+  const candidateModels = ['gemini-3.6-flash', 'gemini-2.0-flash', 'gemini-2.5-flash'];
 
   const transcriptionPrompt = `あなたは面接の文字起こし・話者分離システムです。
 提供された音声ファイルを分析し、面接官と応募者の会話内容をタイムスタンプ付きで順番に書き起こしてください。
@@ -1747,7 +1747,7 @@ ${transcriptFormatted}
 
   const evalModels = [];
   if (modelName) evalModels.push(modelName);
-  ['gemini-2.5-pro', 'gemini-1.5-pro', 'gemini-2.0-flash'].forEach(m => {
+  ['gemini-3.6-pro', 'gemini-2.5-pro', 'gemini-3.6-flash'].forEach(m => {
     if (!evalModels.includes(m)) evalModels.push(m);
   });
 
@@ -2044,7 +2044,7 @@ async function runPipelineStep(apiKey, isFast) {
       if (apiKey && importedFile && uploadedFileMeta) {
         try {
           const modelSelect = document.getElementById('settings-model-select');
-          const modelName = modelSelect ? modelSelect.value : 'gemini-2.5-pro';
+          const modelName = modelSelect ? modelSelect.value : 'gemini-3.6-pro';
           const apiResult = await transcribeInterviewWithGemini(uploadedFileMeta.uri, uploadedFileMeta.mimeType, apiKey, modelName);
           currentTranscription = apiResult;
           advancePipeline(apiKey, isFast);
@@ -2113,7 +2113,7 @@ async function runPipelineStep(apiKey, isFast) {
       if (apiKey && importedFile && uploadedFileMeta && currentTranscription) {
         try {
           const modelSelect = document.getElementById('settings-model-select');
-          const modelName = modelSelect ? modelSelect.value : 'gemini-2.5-pro';
+          const modelName = modelSelect ? modelSelect.value : 'gemini-3.6-pro';
           const transcriptFormatted = currentTranscription.map(t => `[${t.time}] ${t.speaker}: ${t.text}`).join('\n');
           const apiResult = await evaluateTranscriptWithGemini(transcriptFormatted, apiKey, modelName);
           
@@ -2441,7 +2441,7 @@ function integrateResultsIntoApp(candidateKey) {
   const baseTitle = parsedResult.title.replace('.mp4', '').replace('.mp3', '');
   
   const modelSelect = document.getElementById('settings-model-select');
-  const modelName = modelSelect ? modelSelect.value : 'gemini-2.5-pro';
+  const modelName = modelSelect ? modelSelect.value : 'gemini-3.6-pro';
   
   const existingVideo = VIDEOS_DATA.find(v => v.key === candidateKey);
   const groupName = existingVideo ? (existingVideo.group || 'その他') : 'その他';
@@ -3115,12 +3115,12 @@ function updateModelSettingsText() {
   const costHintEl = document.getElementById('model-cost-hint');
   if (modelSelect && costHintEl) {
     const model = modelSelect.value;
-    if (model === 'gemini-2.5-pro') {
+    if (model === 'gemini-3.6-pro') {
+      costHintEl.innerHTML = `💡 推定コスト: 30分動画1本あたり <strong>約120円</strong>（Gemini 3.6 Pro使用時）`;
+    } else if (model === 'gemini-3.6-flash') {
+      costHintEl.innerHTML = `💡 推定コスト: 30分動画1本あたり <strong>約8円</strong>（Gemini 3.6 Flash使用時）`;
+    } else if (model === 'gemini-2.5-pro') {
       costHintEl.innerHTML = `💡 推定コスト: 30分動画1本あたり <strong>約120円</strong>（Gemini 2.5 Pro使用時）`;
-    } else if (model === 'gemini-2.5-flash') {
-      costHintEl.innerHTML = `💡 推定コスト: 30分動画1本あたり <strong>約8円</strong>（Gemini 2.5 Flash使用時）`;
-    } else if (model === 'gemini-1.5-pro') {
-      costHintEl.innerHTML = `💡 推定コスト: 30分動画1本あたり <strong>約120円</strong>（Gemini 1.5 Pro使用時）`;
     }
   }
 }
