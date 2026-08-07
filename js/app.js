@@ -1408,8 +1408,8 @@ async function uploadFileToGemini(file, apiKey) {
     throw new Error('Failed to retrieve X-Goog-Upload-URL from response headers.');
   }
 
-  logToConsole('info', `[INFO] アップロードセッション初期化成功。`);
-  logToConsole('info', `[INFO] 大容量ファイル用チャンク分割アップロードを開始します (合計サイズ: ${formatBytes(file.size)})...`);
+  logToConsole('info', `[INFO] [v2.5.8] アップロードセッション初期化成功。`);
+  logToConsole('info', `[INFO] [v2.5.8] 大容量ファイル用チャンク分割アップロードを開始します (合計サイズ: ${formatBytes(file.size)})...`);
 
   // 8MB チャンクごとに分割してアップロード（ブラウザのメモリ・通信上限での Failed to fetch 防止）
   const chunkSize = 8 * 1024 * 1024;
