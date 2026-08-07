@@ -1414,25 +1414,9 @@ function audioBufferToWavBlob(buffer) {
 }
 
 async function extractAudioFromVideoFile(videoFile) {
-  if (!videoFile || (videoFile.type && videoFile.type.startsWith('audio/'))) {
-    return videoFile;
-  }
-
-  logToConsole('info', `[INFO] ⚡ 超高速化処理: 動画 (${formatBytes(videoFile.size)}) から音声トラックのみをブラウザ抽出中...`);
-
-  try {
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const arrayBuffer = await videoFile.arrayBuffer();
-    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-    const wavBlob = audioBufferToWavBlob(audioBuffer);
-    const audioFile = new File([wavBlob], videoFile.name.replace(/\.[^/.]+$/, "") + ".wav", { type: 'audio/wav' });
-    logToConsole('success', `[SUCCESS] ⚡ 音声抽出完了！ ${formatBytes(videoFile.size)} ➔ ${formatBytes(audioFile.size)} に95%軽量化（転送時間 1/30 に短縮）`);
-    return audioFile;
-  } catch (err) {
-    console.warn("Fast audio extraction failed, using original file:", err);
-    logToConsole('info', `[INFO] 音声直接抽出スキップ。動画のままGeminiへ転送します。`);
-    return videoFile;
-  }
+  // 570MBの動画ファイルをブラウザのJavaScriptでdecodeAudioDataするとメモリが数GBに膨れ上がり
+  // ブラウザがフリーズするため、Gemini Files APIのサーバー側高速処理に直接ストリーミングします。
+  return videoFile;
 }
 
 async function uploadFileToGemini(file, apiKey) {
@@ -1516,30 +1500,28 @@ async function pollFileStatus(fileMetadata, apiKey) {
   const fileId = fileMetadata.name;
   const checkUrl = `https://generativelanguage.googleapis.com/v1beta/${fileId}?key=${apiKey}`;
   
-  logToConsole('info', `[INFO] Gemini Files APIでのファイル処理状態を確認しています...`);
+  logToConsole('info', `[INFO] Gemini Files APIでのファイル処理状態を確認中 (高速チェック)...`);
   
-  // 180回 * 2.5秒 = 450秒（最大7.5分）待機し、大容量ビデオファイルの処理に対応
-  for (let i = 0; i < 180; i++) {
+  for (let i = 0; i < 300; i++) {
     const response = await fetch(checkUrl);
     if (!response.ok) {
       throw new Error(`Failed to check file status: ${await response.text()}`);
     }
     
     const status = await response.json();
-    const elapsedSeconds = ((i + 1) * 2.5).toFixed(0);
-    logToConsole('system', `[SYSTEM] ファイル処理中... 状態: ${status.state} (経過時間: ${elapsedSeconds}秒)`);
+    const elapsedSeconds = ((i + 1) * 0.8).toFixed(1);
     
     if (status.state === 'ACTIVE') {
-      logToConsole('success', `[SUCCESS] ファイルがアクティブになりました。URI: ${status.uri}`);
+      logToConsole('success', `[SUCCESS] ファイルがアクティブになりました (完了時間: ${elapsedSeconds}秒)。URI: ${status.uri}`);
       return status;
     } else if (status.state === 'FAILED') {
       throw new Error('Gemini Files API file processing failed.');
     }
     
-    await new Promise(resolve => setTimeout(resolve, 2500));
+    await new Promise(resolve => setTimeout(resolve, 800));
   }
   
-  throw new Error('Timeout waiting for file to become ACTIVE in Gemini Files API. (ファイル処理タイムアウト。容量が大きすぎる場合は、音声のみの.mp3等に変換して再試行してください)');
+  throw new Error('Timeout waiting for file to become ACTIVE in Gemini Files API.');
 }
 
 async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelName) {
@@ -1984,7 +1966,7 @@ async function runPipelineStep(apiKey, isFast) {
   
   try {
     if (pipelineStepIndex === 1) {
-      duration = isFast ? 500 : 2000;
+      duration = (importedFile && apiKey) ? 100 : (isFast ? 300 : 1500);
       logToConsole('cmd', '> python drive_trigger.py --folder_id 1AbCdEfGhIjKlMnOpQrStUvWxYz');
       logToConsole('info', '[INFO] Google Drive フォルダのスキャンを開始します...');
       
@@ -1998,17 +1980,16 @@ async function runPipelineStep(apiKey, isFast) {
       }, duration);
       
     } else if (pipelineStepIndex === 2) {
-      duration = isFast ? 600 : 3000;
+      duration = (importedFile && apiKey) ? 100 : (isFast ? 300 : 2000);
       const srcName = importedFile ? importedFile.name : (MOCK_FEEDBACKS[selectedPresetKey] ? MOCK_FEEDBACKS[selectedPresetKey].title : "不明なファイル");
       const destName = srcName.replace(/\.[^/.]+$/, "") + '.mp3';
       
       logToConsole('cmd', `> ffmpeg -i "${srcName}" -q:a 0 -map a "${destName}" -y`);
       logToConsole('info', `[INFO] 音声抽出処理を開始します: ${srcName} -> ${destName}`);
       
-      if (!isFast) {
+      if (!isFast && !(importedFile && apiKey)) {
         setTimeout(() => logToConsole('system', 'ffmpeg output: size=  4096kB time=00:04:12.15 bitrate= 128.0kbits/s speed=35.1x'), 700);
         setTimeout(() => logToConsole('system', 'ffmpeg output: size= 11264kB time=00:13:45.33 bitrate= 128.0kbits/s speed=38.4x'), 1400);
-        setTimeout(() => logToConsole('system', 'ffmpeg output: size= 21504kB time=00:27:12.00 bitrate= 128.0kbits/s speed=42.1x'), 2100);
       }
       
       setTimeout(() => {
