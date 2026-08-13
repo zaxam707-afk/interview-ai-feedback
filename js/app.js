@@ -1748,7 +1748,7 @@ ${transcriptFormatted}
 
   const evalModels = [];
   if (modelName) evalModels.push(modelName);
-  ['gemini-2.5-pro', 'gemini-3.7-flash', 'gemini-3.6-flash'].forEach(m => {
+  ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-2.5-pro'].forEach(m => {
     if (!evalModels.includes(m)) evalModels.push(m);
   });
 
@@ -2045,7 +2045,7 @@ async function runPipelineStep(apiKey, isFast) {
       if (apiKey && importedFile && uploadedFileMeta) {
         try {
           const modelSelect = document.getElementById('settings-model-select');
-          const modelName = modelSelect ? modelSelect.value : 'gemini-2.5-pro';
+          const modelName = modelSelect ? modelSelect.value : 'gemini-3.7-flash';
           const apiResult = await transcribeInterviewWithGemini(uploadedFileMeta.uri, uploadedFileMeta.mimeType, apiKey, modelName);
           currentTranscription = apiResult;
           advancePipeline(apiKey, isFast);
@@ -2114,7 +2114,7 @@ async function runPipelineStep(apiKey, isFast) {
       if (apiKey && importedFile && uploadedFileMeta && currentTranscription) {
         try {
           const modelSelect = document.getElementById('settings-model-select');
-          const modelName = modelSelect ? modelSelect.value : 'gemini-2.5-pro';
+          const modelName = modelSelect ? modelSelect.value : 'gemini-3.7-flash';
           const transcriptFormatted = currentTranscription.map(t => `[${t.time}] ${t.speaker}: ${t.text}`).join('\n');
           const apiResult = await evaluateTranscriptWithGemini(transcriptFormatted, apiKey, modelName);
           
@@ -2442,7 +2442,7 @@ function integrateResultsIntoApp(candidateKey) {
   const baseTitle = parsedResult.title.replace('.mp4', '').replace('.mp3', '');
   
   const modelSelect = document.getElementById('settings-model-select');
-  const modelName = modelSelect ? modelSelect.value : 'gemini-2.5-pro';
+  const modelName = modelSelect ? modelSelect.value : 'gemini-3.7-flash';
   
   const existingVideo = VIDEOS_DATA.find(v => v.key === candidateKey);
   const groupName = existingVideo ? (existingVideo.group || 'その他') : 'その他';
@@ -3116,12 +3116,13 @@ function updateModelSettingsText() {
   const costHintEl = document.getElementById('model-cost-hint');
   if (modelSelect && costHintEl) {
     const model = modelSelect.value;
-    if (model === 'gemini-2.5-pro') {
-      costHintEl.innerHTML = `💡 推定コスト: 30分動画1本あたり <strong>約120円</strong>（Gemini 2.5 Pro使用時）`;
-    } else if (model === 'gemini-3.7-flash') {
+    // 3.7 と 3.6 Flash は同単価（入力 $0.75 / 出力 $3.75 per 1M）のため同額表示
+    if (model === 'gemini-3.7-flash') {
       costHintEl.innerHTML = `💡 推定コスト: 30分動画1本あたり <strong>約8円</strong>（Gemini 3.7 Flash使用時）`;
     } else if (model === 'gemini-3.6-flash') {
       costHintEl.innerHTML = `💡 推定コスト: 30分動画1本あたり <strong>約8円</strong>（Gemini 3.6 Flash使用時）`;
+    } else if (model === 'gemini-2.5-pro') {
+      costHintEl.innerHTML = `💡 推定コスト: 30分動画1本あたり <strong>約120円</strong>（Gemini 2.5 Pro使用時）`;
     }
   }
 }
