@@ -2,6 +2,12 @@
    Interview Feedback AI - Demo App Logic
    ======================================== */
 
+// このファイル自身のバージョン。デプロイのたびにここと index.html の
+// js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
+// 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
+// （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
+const APP_VERSION = 'v2.7.2';
+
 /// ===== Mock Data =====
 const CRITERIA = [
   { key:'icebreak_listening', name:'アイスブレイク・傾聴力', icon:'🤝' },
@@ -1453,8 +1459,8 @@ async function uploadFileToGemini(file, apiKey) {
     throw new Error('Failed to retrieve X-Goog-Upload-URL from response headers.');
   }
 
-  logToConsole('info', `[INFO] [v2.7.0] アップロードセッション初期化成功。`);
-  logToConsole('info', `[INFO] [v2.7.0] 高速チャンク分割アップロードを開始します (合計サイズ: ${formatBytes(file.size)})...`);
+  logToConsole('info', `[INFO] [${APP_VERSION}] アップロードセッション初期化成功。`);
+  logToConsole('info', `[INFO] [${APP_VERSION}] 高速チャンク分割アップロードを開始します (合計サイズ: ${formatBytes(file.size)})...`);
 
   // 32MB チャンクごとに分割してアップロード（v2.7.0: 8MB→32MBに拡大、HTTPリクエスト数を1/4に削減）
   const chunkSize = 32 * 1024 * 1024;
@@ -1504,7 +1510,7 @@ async function pollFileStatus(fileMetadata, apiKey) {
   const fileId = fileMetadata.name;
   const checkUrl = `https://generativelanguage.googleapis.com/v1beta/${fileId}?key=${apiKey}`;
   
-  logToConsole('info', `[INFO] [v2.7.0] Gemini Files APIでのファイル処理状態を高速ポーリング中...`);
+  logToConsole('info', `[INFO] [${APP_VERSION}] Gemini Files APIでのファイル処理状態を高速ポーリング中...`);
   
   let elapsedMs = 0;
   for (let i = 0; i < 300; i++) {
@@ -3128,6 +3134,13 @@ function updateModelSettingsText() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // フッターのバージョン表記を、実際に読み込まれた app.js の値で上書きする。
+  // ブラウザが古い app.js をキャッシュしていれば古い値が出るので、これで新旧を判別できる
+  const versionEl = document.querySelector('.version');
+  if (versionEl) {
+    versionEl.textContent = `${APP_VERSION} Demo ・ Powered by Gemini AI (⚡ Pipeline Turbo)`;
+  }
+
   // Tag all initial presets as mock data
   for (const key in MOCK_FEEDBACKS) {
     if (MOCK_FEEDBACKS[key]) {
