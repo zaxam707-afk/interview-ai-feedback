@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.7.2';
+const APP_VERSION = 'v2.7.4';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -353,9 +353,35 @@ const MOCK_FEEDBACKS = {
   }
 };
 
+// デモ用のサンプル録画。実データが1件も無いときだけ表示する。
+// 以前は同じ配列が3か所に書かれていて、片方だけ直すと挙動がずれていたので1本にまとめた。
+const DEMO_VIDEOS = [
+  { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '佐藤面接官' },
+  { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '高橋面接官' },
+  { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '伊藤面接官' }
+];
+const DEMO_VIDEO_KEYS = DEMO_VIDEOS.map(v => v.key);
+
 let HISTORY_DATA = [];
 let VIDEOS_DATA = [];
 let firebaseDb = null;
+
+// クラウド保存の失敗は今まで console にしか出ておらず、
+// 「追加したのに次に開くと消えている」の原因が画面からまったく分からなかった。
+// 全件ぶんの通知で埋まらないよう、10秒に1回だけ知らせる。
+let lastCloudSaveErrorAt = 0;
+function notifyCloudSaveFailed(err) {
+  const now = Date.now();
+  if (now - lastCloudSaveErrorAt < 10000) return;
+  lastCloudSaveErrorAt = now;
+
+  const badge = document.getElementById('global-sync-badge');
+  if (badge) {
+    badge.textContent = '🔴 クラウド保存に失敗';
+    badge.className = 'status-badge pending';
+  }
+  showToast('⚠️', `クラウドに保存できませんでした（${err.code || err.message}）。この端末には残っています。`);
+}
 
 function saveStateToLocalStorage() {
   try {
@@ -376,13 +402,19 @@ function saveStateToLocalStorage() {
         const docData = { ...v };
         delete docData.fileObject;
         firebaseDb.collection("videos").doc(v.key).set(docData)
-          .catch(err => console.error("Error saving video doc:", err));
+          .catch(err => {
+            console.error("Error saving video doc:", err);
+            notifyCloudSaveFailed(err);
+          });
       });
       // Save custom feedbacks to collection "feedbacks"
       for (const k in customFeedbacks) {
         if (customFeedbacks[k]) {
           firebaseDb.collection("feedbacks").doc(k).set(customFeedbacks[k])
-            .catch(err => console.error("Error saving feedback doc:", err));
+            .catch(err => {
+              console.error("Error saving feedback doc:", err);
+              notifyCloudSaveFailed(err);
+            });
         }
       }
     }
@@ -437,21 +469,23 @@ function setupFirestoreRealtimeSync() {
           }
         });
 
-        const PRESET_VIDEOS = [
-          { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '佐藤面接官' },
-          { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '高橋面接官' },
-          { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '伊藤面接官' }
-        ];
-        
-        const presetsToAppend = PRESET_VIDEOS.filter(p => !loadedVideos.some(lv => lv.key === p.key));
+        const presetsToAppend = DEMO_VIDEOS.filter(p => !loadedVideos.some(lv => lv.key === p.key));
         VIDEOS_DATA = [...loadedVideos, ...presetsToAppend];
       } else {
-        // If Firestore is connected but empty, use presets
-        VIDEOS_DATA = [
-          { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '佐藤面接官' },
-          { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '高橋面接官' },
-          { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '伊藤面接官' }
-        ];
+        // Firestore が0件でも、手元にあるデータは絶対に捨てない。
+        //
+        // 以前はここで無条件にデモ3件へ置き換えていた。そのため
+        // 権限エラーや読み込み遅延で一瞬でも 0 件を受け取ると、
+        // localStorage から復元した実データが画面から消えていた。
+        // さらにその状態で何か保存操作をすると、空になった VIDEOS_DATA で
+        // localStorage まで上書きされ、控えごと失われる。
+        // 「分析履歴がすべて消えた」の原因はこれ。
+        const hasRealData = VIDEOS_DATA.some(v => !DEMO_VIDEO_KEYS.includes(v.key));
+        if (hasRealData) {
+          console.warn('Firestore の videos が0件でしたが、手元のデータを保持します。');
+        } else {
+          VIDEOS_DATA = [...DEMO_VIDEOS];
+        }
       }
       
       // Rebuild HISTORY_DATA (safeguarding missing properties)
@@ -723,7 +757,11 @@ let SHARED_API_KEY = '';
 let currentAnalysisVideoKey = '';
 
 function initTrendChart() {
-  const ctx = document.getElementById('trendChart').getContext('2d');
+  // Chart.js は CDN から読んでいるので、読み込みに失敗すると undefined になる。
+  // ここで落ちると呼び出し元の初期化がまとめて止まるため、必ずガードする。
+  const canvas = document.getElementById('trendChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const ctx = canvas.getContext('2d');
   if (trendChartInstance) trendChartInstance.destroy();
 
   // Limit to latest 10 entries for clean visualization
@@ -787,7 +825,10 @@ function renderRadarChart(scores) {
 }
 
 function initHistoryChart() {
-  const ctx = document.getElementById('historyChart').getContext('2d');
+  // Chart.js の読み込み失敗と要素欠落を両方ガードする（initTrendChart と同じ理由）
+  const canvas = document.getElementById('historyChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const ctx = canvas.getContext('2d');
   if (historyChartInstance) historyChartInstance.destroy();
 
   const filterSelect = document.getElementById('historyInterviewerFilter');
@@ -883,7 +924,10 @@ function initHistoryChart() {
 }
 
 function initGradeDistChart() {
-  const ctx = document.getElementById('gradeDistChart').getContext('2d');
+  // Chart.js の読み込み失敗と要素欠落を両方ガードする（initTrendChart と同じ理由）
+  const canvas = document.getElementById('gradeDistChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const ctx = canvas.getContext('2d');
   if (gradeDistChartInstance) gradeDistChartInstance.destroy();
 
   const filterSelect = document.getElementById('historyInterviewerFilter');
@@ -2958,21 +3002,43 @@ function setupVideosImportEvents() {
 }
 
 function handleVideosFileSelect(file) {
-  // Check if a video with the exact same name already exists in VIDEOS_DATA
+  // 同じ名前の録画がすでに一覧にある場合は、新しい行を増やさず、
+  // 既存の行にファイル実体だけを紐づける（同じ面接が二重に並ぶのを防ぐため）。
+  //
+  // ただし以前はトーストを出すだけだったので、該当行が絞り込みで隠れていたり
+  // 一覧の下のほうにあると、画面上は何も起きていないのと区別がつかず
+  // 「このファイルだけアップロードできない」と見えていた。
+  // 該当行を必ず画面に出し、次に何を押せばいいかまで伝える。
   const existingVideo = VIDEOS_DATA.find(v => v.name === file.name);
   if (existingVideo) {
     existingVideo.fileObject = file;
     existingVideo.size = formatBytes(file.size);
-    
+    existingVideo.hidden = false;
+
     // Pre-select for the AI agent panel
     currentAnalysisVideoKey = existingVideo.key;
     importedFile = file;
     selectedPresetKey = null;
-    
-    showToast('📁', `${file.name} の実体ファイルを設定しました。`);
+
+    // 絞り込みのせいで該当行が見えないなら「すべて」に戻す
+    const filterSelect = document.getElementById('videoTableGroupFilter');
+    if (filterSelect && filterSelect.value !== 'all' && filterSelect.value !== existingVideo.group) {
+      filterSelect.value = 'all';
+    }
+
+    // 見つけやすいように一覧の先頭へ移す
+    VIDEOS_DATA = [existingVideo, ...VIDEOS_DATA.filter(v => v.key !== existingVideo.key)];
+
+    const nextAction = existingVideo.status === 'done'
+      ? 'すでに分析済みです。やり直すなら「再分析」を押してください。'
+      : '一覧のいちばん上にあります。「🤖 分析」を押すと開始できます。';
+    showToast('📁', `「${file.name}」はすでに一覧にあります。ファイルを紐づけました。${nextAction}`);
+
     saveStateToLocalStorage();
+    updateGroupDropdowns();
     renderVideosTable();
-    
+    updateDashboardMetrics();
+
     // Update target display in AI agent tab if it exists
     const targetEl = document.getElementById('active-analysis-target');
     if (targetEl) {
@@ -3172,12 +3238,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Load VIDEOS_DATA from localStorage
-  const PRESET_VIDEOS = [
-    { key: 'sato', name: '佐藤面接官_0417.mp4', date: '2026/04/17', duration: '30分', size: '268 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '佐藤面接官' },
-    { key: 'takahashi', name: '高橋面接官_0417.mp4', date: '2026/04/17', duration: '27分', size: '231 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '高橋面接官' },
-    { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '伊藤面接官' }
-  ];
-
   try {
     const savedVideos = localStorage.getItem('interview_videos_data');
     if (savedVideos) {
@@ -3189,10 +3249,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       });
     } else {
-      VIDEOS_DATA = [...PRESET_VIDEOS];
+      VIDEOS_DATA = [...DEMO_VIDEOS];
     }
   } catch (e) {
-    VIDEOS_DATA = [...PRESET_VIDEOS];
+    VIDEOS_DATA = [...DEMO_VIDEOS];
   }
 
   // Initialize Firebase if config is saved
@@ -3242,24 +3302,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  updateGroupDropdowns();
-  initTrendChart();
-  initHistoryChart();
-  initGradeDistChart();
-  renderHistoryList();
-  renderInterviewerTendencies();
-  renderCriteriaSettings();
-  renderVideosTable();
-  updateDashboardMetrics();
-  setupImportEvents();
-  setupApiKeyEvents();
-  setupVideosImportEvents();
-  
+  // 初期化は1つでも例外を投げると、それ以降が丸ごと実行されない。
+  // 実際これで setupVideosImportEvents() まで到達せず、ドロップゾーンに
+  // イベントが登録されないまま＝「ドロップしても何も起きない」状態になっていた。
+  // Firestore の購読はこれより前に済んでいるので、一覧の表示と同期バッジだけは
+  // 正常に見えてしまい、原因が分かりにくかった。
+  // 1つの失敗が他を巻き込まないよう、個別に保護する。
+  const safeInit = (label, fn) => {
+    try {
+      fn();
+    } catch (e) {
+      console.error(`初期化に失敗しました（${label}）:`, e);
+    }
+  };
+
+  // 動画の追加と分析に必要なイベント登録を最優先で行う。
+  // グラフなど見た目まわりが壊れても、ここだけは死守する。
+  safeInit('録画一覧のドロップゾーン', setupVideosImportEvents);
+  safeInit('AI分析タブのドロップゾーン', setupImportEvents);
+  safeInit('APIキー設定', setupApiKeyEvents);
+
+  safeInit('面接官の絞り込み', updateGroupDropdowns);
+  safeInit('録画一覧の描画', renderVideosTable);
+  safeInit('ダッシュボードの集計', updateDashboardMetrics);
+  safeInit('スコア推移グラフ', initTrendChart);
+  safeInit('履歴グラフ', initHistoryChart);
+  safeInit('判定分布グラフ', initGradeDistChart);
+  safeInit('履歴一覧', renderHistoryList);
+  safeInit('面接官の傾向', renderInterviewerTendencies);
+  safeInit('評価基準の設定', renderCriteriaSettings);
+
   // Initialize custom styled dropdowns
-  makeCustomSelect('detailInterviewerSelect');
-  makeCustomSelect('detailVideoSelect');
-  makeCustomSelect('videoTableGroupFilter');
-  makeCustomSelect('settings-model-select');
+  safeInit('ドロップダウンの装飾', () => {
+    makeCustomSelect('detailInterviewerSelect');
+    makeCustomSelect('detailVideoSelect');
+    makeCustomSelect('videoTableGroupFilter');
+    makeCustomSelect('settings-model-select');
+  });
 });
 
 function updateApiKeyStatus() {
