@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.7.4';
+const APP_VERSION = 'v2.7.5';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -3002,49 +3002,69 @@ function setupVideosImportEvents() {
 }
 
 function handleVideosFileSelect(file) {
-  // 同じ名前の録画がすでに一覧にある場合は、新しい行を増やさず、
-  // 既存の行にファイル実体だけを紐づける（同じ面接が二重に並ぶのを防ぐため）。
+  // 同じ名前の録画がすでに一覧にある場合、以前は問答無用で
+  // 「既存行にファイルを紐づけるだけ」に倒していた。そのため一覧に新しい行が出ず、
+  // しかも該当行が絞り込みで隠れていたり下のほうにあると画面上は何も起きず、
+  // 「このファイルだけアップロードできない」ように見えていた。
   //
-  // ただし以前はトーストを出すだけだったので、該当行が絞り込みで隠れていたり
-  // 一覧の下のほうにあると、画面上は何も起きていないのと区別がつかず
-  // 「このファイルだけアップロードできない」と見えていた。
-  // 該当行を必ず画面に出し、次に何を押せばいいかまで伝える。
+  // 撮り直しや分析のやり直しで「別の録画として追加したい」場合も必ずあり、
+  // どちらの意図かは機械には判断できない。その場で選んでもらう。
   const existingVideo = VIDEOS_DATA.find(v => v.name === file.name);
   if (existingVideo) {
-    existingVideo.fileObject = file;
-    existingVideo.size = formatBytes(file.size);
-    existingVideo.hidden = false;
+    console.log('[診断] 同名の既存行が見つかりました:', {
+      キー: existingVideo.key,
+      名前: existingVideo.name,
+      非表示: existingVideo.hidden,
+      状態: existingVideo.status,
+      面接官: existingVideo.group,
+      一覧の総件数: VIDEOS_DATA.length,
+      表示対象の件数: VIDEOS_DATA.filter(v => !v.hidden).length
+    });
 
-    // Pre-select for the AI agent panel
-    currentAnalysisVideoKey = existingVideo.key;
-    importedFile = file;
-    selectedPresetKey = null;
+    const addAsNew = confirm(
+      `「${file.name}」と同じ名前の録画が、すでに一覧にあります。\n\n` +
+      `［OK］　　　　別の録画として新しく追加する\n` +
+      `［キャンセル］既存の行にこのファイルを紐づける（そのまま分析できます）`
+    );
 
-    // 絞り込みのせいで該当行が見えないなら「すべて」に戻す
-    const filterSelect = document.getElementById('videoTableGroupFilter');
-    if (filterSelect && filterSelect.value !== 'all' && filterSelect.value !== existingVideo.group) {
-      filterSelect.value = 'all';
+    // ［キャンセル］のときだけ既存行に紐づけて終わる。
+    // ［OK］なら下へ抜けて、通常どおり新しい行を追加する。
+    if (!addAsNew) {
+      existingVideo.fileObject = file;
+      existingVideo.size = formatBytes(file.size);
+      existingVideo.hidden = false;
+
+      // Pre-select for the AI agent panel
+      currentAnalysisVideoKey = existingVideo.key;
+      importedFile = file;
+      selectedPresetKey = null;
+
+      // 絞り込みのせいで該当行が見えないなら「すべて」に戻す
+      const filterSelect = document.getElementById('videoTableGroupFilter');
+      if (filterSelect && filterSelect.value !== 'all' && filterSelect.value !== existingVideo.group) {
+        filterSelect.value = 'all';
+      }
+
+      // 見つけやすいように一覧の先頭へ移す
+      VIDEOS_DATA = [existingVideo, ...VIDEOS_DATA.filter(v => v.key !== existingVideo.key)];
+
+      const nextAction = existingVideo.status === 'done'
+        ? 'すでに分析済みです。やり直すなら「再分析」を押してください。'
+        : '一覧のいちばん上にあります。「🤖 分析」を押すと開始できます。';
+      showToast('📁', `「${file.name}」はすでに一覧にあります。ファイルを紐づけました。${nextAction}`);
+
+      saveStateToLocalStorage();
+      updateGroupDropdowns();
+      renderVideosTable();
+      updateDashboardMetrics();
+
+      // Update target display in AI agent tab if it exists
+      const targetEl = document.getElementById('active-analysis-target');
+      if (targetEl) {
+        targetEl.innerHTML = `分析対象: <strong>${existingVideo.name}</strong> (${existingVideo.group || '面接官未指定'})`;
+      }
+      return;
     }
-
-    // 見つけやすいように一覧の先頭へ移す
-    VIDEOS_DATA = [existingVideo, ...VIDEOS_DATA.filter(v => v.key !== existingVideo.key)];
-
-    const nextAction = existingVideo.status === 'done'
-      ? 'すでに分析済みです。やり直すなら「再分析」を押してください。'
-      : '一覧のいちばん上にあります。「🤖 分析」を押すと開始できます。';
-    showToast('📁', `「${file.name}」はすでに一覧にあります。ファイルを紐づけました。${nextAction}`);
-
-    saveStateToLocalStorage();
-    updateGroupDropdowns();
-    renderVideosTable();
-    updateDashboardMetrics();
-
-    // Update target display in AI agent tab if it exists
-    const targetEl = document.getElementById('active-analysis-target');
-    if (targetEl) {
-      targetEl.innerHTML = `分析対象: <strong>${existingVideo.name}</strong> (${existingVideo.group || '面接官未指定'})`;
-    }
-    return;
   }
 
   const fileKey = 'custom_' + Date.now();
