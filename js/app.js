@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.7.5';
+const APP_VERSION = 'v2.7.6';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -1507,7 +1507,11 @@ async function uploadFileToGemini(file, apiKey) {
   logToConsole('info', `[INFO] [${APP_VERSION}] 高速チャンク分割アップロードを開始します (合計サイズ: ${formatBytes(file.size)})...`);
 
   // 32MB チャンクごとに分割してアップロード（v2.7.0: 8MB→32MBに拡大、HTTPリクエスト数を1/4に削減）
+  // v2.7.6: 400MB級のファイルではアップロードに数分かかり、途中の1チャンクが
+  //         回線の瞬断・タイムアウトで落ちるだけでパイプライン全体がエラー終了していた。
+  //         チャンク単位でリトライし、サーバ側の受信済みバイト数を問い合わせて再開する。
   const chunkSize = 32 * 1024 * 1024;
+  const contentType = file.type || 'application/octet-stream';
   let offset = 0;
   let fileMetadata = null;
   let lastLoggedPercent = -10; // 10%刻みでログ出力（DOM更新を削減）
@@ -1524,30 +1528,103 @@ async function uploadFileToGemini(file, apiKey) {
       lastLoggedPercent = percent;
     }
 
-    const chunkResponse = await fetch(uploadUrl, {
-      method: 'POST',
-      headers: {
-        'X-Goog-Upload-Offset': offset.toString(),
-        'X-Goog-Upload-Command': command,
-        'Content-Type': file.type || 'application/octet-stream'
-      },
-      body: chunk
-    });
+    const chunkResponse = await uploadChunkWithRetry(uploadUrl, chunk, offset, command, contentType, file.size);
 
-    if (!chunkResponse.ok) {
-      const errorText = await chunkResponse.text();
-      throw new Error(`Chunk upload failed at offset ${offset}: ${errorText}`);
+    // サーバ側が既に先まで受信していた場合（リトライ時によく起きる）はそのオフセットまで進める
+    if (chunkResponse === null) {
+      const received = await queryUploadOffset(uploadUrl);
+      if (received === null || received <= offset) {
+        throw new Error(`アップロードがオフセット ${offset} で進まなくなりました。回線状況を確認して再実行してください。`);
+      }
+      offset = received;
+      continue;
     }
 
     if (isLastChunk) {
-      fileMetadata = await chunkResponse.json();
+      fileMetadata = await chunkResponse.json().catch(() => null);
     }
 
     offset = end;
   }
 
+  // finalize のレスポンスが空・非JSONだった場合はメタデータを問い合わせ直す
+  if (!fileMetadata || !fileMetadata.file) {
+    logToConsole('info', `[INFO] finalize 応答からメタデータを取得できなかったため、アップロードセッションに問い合わせます...`);
+    const finalizeResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: { 'X-Goog-Upload-Command': 'finalize', 'X-Goog-Upload-Offset': file.size.toString() }
+    });
+    fileMetadata = await finalizeResponse.json().catch(() => null);
+  }
+
+  if (!fileMetadata || !fileMetadata.file) {
+    throw new Error('アップロードは完了しましたが、Gemini Files API からファイル情報を取得できませんでした。');
+  }
+
   logToConsole('success', `[SUCCESS] 高速チャンクアップロード100%完了。 File Name: ${fileMetadata.file.name}`);
   return fileMetadata.file;
+}
+
+// 受信済みバイト数をサーバに問い合わせる（再開位置の決定に使う）
+async function queryUploadOffset(uploadUrl) {
+  try {
+    const res = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: { 'X-Goog-Upload-Command': 'query' }
+    });
+    const received = res.headers.get('X-Goog-Upload-Size-Received');
+    return received === null ? null : parseInt(received, 10);
+  } catch (err) {
+    return null;
+  }
+}
+
+// 1チャンクを最大4回まで再送する。回復不能なエラー（4xx）は即座に投げる。
+async function uploadChunkWithRetry(uploadUrl, chunk, offset, command, contentType, totalSize) {
+  const maxAttempts = 4;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+          'X-Goog-Upload-Offset': offset.toString(),
+          'X-Goog-Upload-Command': command,
+          'Content-Type': contentType
+        },
+        body: chunk
+      });
+
+      if (response.ok) {
+        return response;
+      }
+
+      const errorText = await response.text();
+
+      // 400/403/404 はリトライしても直らない（セッション失効・権限・課金・クォータ）
+      if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+        throw new Error(
+          `チャンクアップロード失敗 (HTTP ${response.status}) offset=${formatBytes(offset)}/${formatBytes(totalSize)}: ${errorText.substring(0, 400)}`
+        );
+      }
+
+      lastError = new Error(`HTTP ${response.status}: ${errorText.substring(0, 200)}`);
+    } catch (err) {
+      // fetch 自体が reject（回線断・CORS・タイムアウト）
+      if (err && /チャンクアップロード失敗/.test(err.message)) throw err;
+      lastError = err;
+    }
+
+    if (attempt < maxAttempts) {
+      const waitMs = 1000 * Math.pow(2, attempt - 1); // 1s → 2s → 4s
+      logToConsole('error', `[WARNING] オフセット ${formatBytes(offset)} のアップロードに失敗しました（${attempt}/${maxAttempts}回目: ${lastError ? lastError.message : '不明'}）。${waitMs / 1000}秒後に再送します...`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+  }
+
+  logToConsole('error', `[WARNING] オフセット ${formatBytes(offset)} を ${maxAttempts} 回再送しても成功しませんでした。サーバ側の受信済み位置を確認します...`);
+  return null;
 }
 
 async function pollFileStatus(fileMetadata, apiKey) {
@@ -1599,13 +1676,35 @@ async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelNam
 3. 挨拶、自己紹介、質疑応答の一連の流れを正確に記録してください。
 4. 余計な解説やスコアは含めず、書き起こしテキストのみを出力してください。`;
 
-  let lastError = null;
-  let rawText = "";
-  let usedModel = "";
+  // v2.7.6: 30分の面接では出力が 8192 トークンに収まらず、モデルが MAX_TOKENS で
+  //         打ち切られていた。しかも finishReason を見ていなかったため、
+  //         途中までの文字起こしが「正常終了」として扱われ、後半が丸ごと欠落していた。
+  //         上限を引き上げたうえで、打ち切られた場合は続きを生成して結合する。
+  // モデルによって出力上限が違うため、400（INVALID_ARGUMENT）で弾かれたら段階的に下げる。
+  // 下げても打ち切られた分は下の継続生成で拾えるので、最悪でも欠落はしない。
+  const OUTPUT_TOKEN_STEPS = [65536, 32768, 16384, 8192];
+  const MAX_CONTINUATIONS = 10;
+  let outputTokenLimit = OUTPUT_TOKEN_STEPS[0];
 
-  for (const transcribeModel of candidateModels) {
-    logToConsole('info', `[INFO] 【文字起こし】音声データから話者分離付きの文字起こしを生成中 (使用モデル: ${transcribeModel})...`);
-    logToConsole('cmd', `> curl -X POST "https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=..."`);
+  // 継続生成の指示に使う「直前までの末尾」を取り出す
+  const tailOf = (text, lineCount) => text.split('\n').filter(l => l.trim()).slice(-lineCount).join('\n');
+  const lastTimeOf = (text) => {
+    const matches = text.match(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g);
+    return matches && matches.length ? matches[matches.length - 1].replace(/[\[\]]/g, '') : '不明';
+  };
+
+  async function callTranscription(transcribeModel, continuationTail) {
+    const promptText = continuationTail
+      ? `${transcriptionPrompt}
+
+【続きの生成】
+この音声の文字起こしは途中までしか完了していません。以下は出力済みテキストの末尾です。
+---
+${continuationTail}
+---
+上の続きから、音声の最後まで同じフォーマットで書き起こしてください。
+すでに出力済みの部分は繰り返さず、続きだけを出力してください。`
+      : transcriptionPrompt;
 
     const transcriptionRequestBody = {
       contents: [
@@ -1618,46 +1717,97 @@ async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelNam
               }
             },
             {
-              text: transcriptionPrompt
+              text: promptText
             }
           ]
         }
       ],
       generationConfig: {
         temperature: 0.0,
-        maxOutputTokens: 8192
+        maxOutputTokens: outputTokenLimit
       }
     };
 
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(transcriptionRequestBody)
-      });
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(transcriptionRequestBody)
+    });
 
-      if (!response.ok) {
-        const errText = await response.text();
-        console.warn(`Gemini transcription call with ${transcribeModel} failed (${response.status}):`, errText);
-        logToConsole('error', `[WARNING] ${transcribeModel} での呼び出し失敗 (${response.status})。次のモデルを試行します...`);
-        lastError = new Error(`API Error (${response.status}): ${errText.substring(0, 200)}`);
+    if (!response.ok) {
+      const errText = await response.text();
+      const err = new Error(`API Error (${response.status}): ${errText.substring(0, 200)}`);
+      err.status = response.status;
+      throw err;
+    }
+
+    const json = await response.json();
+    const candidate = json.candidates && json.candidates.length > 0 ? json.candidates[0] : null;
+    const text = candidate && candidate.content && candidate.content.parts
+      ? candidate.content.parts.map(p => p.text || "").join("\n").trim()
+      : "";
+    return { text, finishReason: candidate ? (candidate.finishReason || "") : "" };
+  }
+
+  // 出力上限がモデルに拒否された（400）ときだけ、上限を1段階ずつ下げて再試行する
+  async function callTranscriptionSafely(transcribeModel, continuationTail) {
+    while (true) {
+      try {
+        return await callTranscription(transcribeModel, continuationTail);
+      } catch (err) {
+        const stepIndex = OUTPUT_TOKEN_STEPS.indexOf(outputTokenLimit);
+        if (err.status === 400 && stepIndex >= 0 && stepIndex < OUTPUT_TOKEN_STEPS.length - 1) {
+          outputTokenLimit = OUTPUT_TOKEN_STEPS[stepIndex + 1];
+          logToConsole('error', `[WARNING] ${transcribeModel} が maxOutputTokens=${OUTPUT_TOKEN_STEPS[stepIndex]} を受け付けませんでした。${outputTokenLimit} に下げて再試行します...`);
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  let lastError = null;
+  let rawText = "";
+  let usedModel = "";
+
+  for (const transcribeModel of candidateModels) {
+    logToConsole('info', `[INFO] 【文字起こし】音声データから話者分離付きの文字起こしを生成中 (使用モデル: ${transcribeModel})...`);
+    logToConsole('cmd', `> curl -X POST "https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=..."`);
+
+    try {
+      let result = await callTranscriptionSafely(transcribeModel, null);
+
+      if (!result.text) {
+        logToConsole('error', `[WARNING] ${transcribeModel} の応答が空でした（finishReason: ${result.finishReason || '不明'}）。次のモデルを試行します...`);
         continue;
       }
 
-      const json = await response.json();
-      if (json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts) {
-        rawText = json.candidates[0].content.parts.map(p => p.text || "").join("\n").trim();
-        if (rawText) {
-          usedModel = transcribeModel;
+      rawText = result.text;
+      usedModel = transcribeModel;
+
+      // 出力上限で打ち切られている限り、続きを生成して繋ぐ
+      let continuations = 0;
+      while (result.finishReason === 'MAX_TOKENS' && continuations < MAX_CONTINUATIONS) {
+        continuations++;
+        logToConsole('info', `[INFO] 出力上限に達しました（${lastTimeOf(rawText)} まで生成済み）。続きを生成します（${continuations}/${MAX_CONTINUATIONS}回目）...`);
+        result = await callTranscriptionSafely(transcribeModel, tailOf(rawText, 6));
+        if (!result.text) {
+          logToConsole('error', `[WARNING] 続きの応答が空でした。ここまでの文字起こしで処理を続行します。`);
           break;
         }
+        rawText += '\n' + result.text;
       }
-      
-      logToConsole('error', `[WARNING] ${transcribeModel} の応答が空でした。次のモデルを試行します...`);
+
+      if (result.finishReason === 'MAX_TOKENS') {
+        logToConsole('error', `[WARNING] 継続生成の上限（${MAX_CONTINUATIONS}回）に達しました。文字起こしが音声の末尾まで届いていない可能性があります（${lastTimeOf(rawText)} まで）。`);
+      }
+
+      break;
     } catch (err) {
       console.warn(`Exception calling ${transcribeModel}:`, err);
+      logToConsole('error', `[WARNING] ${transcribeModel} での呼び出し失敗（${err.message}）。次のモデルを試行します...`);
       lastError = err;
     }
   }
@@ -1665,7 +1815,7 @@ async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelNam
   if (!rawText || rawText.trim() === "") {
     throw new Error(`全Geminiモデルでの文字起こし生成に失敗しました。詳細: ${lastError ? lastError.message : '応答テキストが空でした'}`);
   }
-  
+
   // Parse plain text transcription to array of objects
   let cleanText = rawText.trim();
   if (cleanText.startsWith('```')) {
@@ -1682,17 +1832,22 @@ async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelNam
   const lines = cleanText.split('\n');
   const transcription = [];
   const lineRegex = /^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(面接官|応募者|Interviewer|Applicant)\s*:\s*(.*)$/;
+  const seen = new Set(); // 継続生成のつなぎ目で同じ発言が重複するのを防ぐ
   for (const line of lines) {
     const match = line.trim().match(lineRegex);
     if (match) {
       let speaker = match[2].trim();
       if (speaker === 'Interviewer') speaker = '面接官';
       if (speaker === 'Applicant') speaker = '応募者';
-      transcription.push({
+      const entry = {
         time: match[1],
         speaker: speaker,
         text: match[3].trim()
-      });
+      };
+      const key = `${entry.time}|${entry.speaker}|${entry.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      transcription.push(entry);
     }
   }
 
@@ -1709,7 +1864,8 @@ async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelNam
     });
   }
 
-  logToConsole('success', `[SUCCESS] 【第1段階完了】高精度文字起こしデータを受信しました（発言数: ${transcription.length}）。`);
+  const coverage = transcription.length ? transcription[transcription.length - 1].time : '不明';
+  logToConsole('success', `[SUCCESS] 【第1段階完了】高精度文字起こしデータを受信しました（発言数: ${transcription.length} / 最終タイムスタンプ: ${coverage}）。`);
   return transcription;
 }
 
@@ -1744,7 +1900,9 @@ ${transcriptFormatted}
     ],
     generationConfig: {
       temperature: 0.2,
-      maxOutputTokens: 8192,
+      // v2.7.6: 文字起こしが末尾まで揃うと評価JSONも長くなる。8192 で打ち切られると
+      //         JSON が壊れて JSON.parse が失敗し、原因不明のまま全モデルで失敗していた。
+      maxOutputTokens: 32768,
       responseMimeType: "application/json",
       responseSchema: {
         type: "OBJECT",
@@ -1825,10 +1983,17 @@ ${transcriptFormatted}
 
       const json = await response.json();
       let rawEvalText = "";
-      if (json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts) {
-        rawEvalText = json.candidates[0].content.parts.map(p => p.text || "").join("\n").trim();
+      const evalCandidate = json.candidates && json.candidates.length > 0 ? json.candidates[0] : null;
+      if (evalCandidate && evalCandidate.content && evalCandidate.content.parts) {
+        rawEvalText = evalCandidate.content.parts.map(p => p.text || "").join("\n").trim();
       }
-      
+
+      if (evalCandidate && evalCandidate.finishReason && evalCandidate.finishReason !== 'STOP') {
+        logToConsole('error', `[WARNING] ${evalModel} の評価出力が途中で終了しました（finishReason: ${evalCandidate.finishReason}）。次のモデルを試行します...`);
+        lastEvalErr = new Error(`評価出力が ${evalCandidate.finishReason} で打ち切られました`);
+        continue;
+      }
+
       if (rawEvalText) {
         // Clean JSON markdown blocks if any
         if (rawEvalText.startsWith('```')) {
