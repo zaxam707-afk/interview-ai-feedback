@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.7.6';
+const APP_VERSION = 'v2.7.7';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -1658,68 +1658,131 @@ async function pollFileStatus(fileMetadata, apiKey) {
   throw new Error('Timeout waiting for file to become ACTIVE in Gemini Files API.');
 }
 
-async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelName) {
+// 動画/音声の実尺（秒）をブラウザ側で取得する。メタデータだけ読むのでメモリは消費しない。
+// 取れなかった場合は null を返し、呼び出し側は分割なしの従来動作にフォールバックする。
+async function getMediaDurationSeconds(file) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let url = null;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      if (url) { try { URL.revokeObjectURL(url); } catch (e) {} }
+      resolve(value);
+    };
+    try {
+      url = URL.createObjectURL(file);
+      const el = document.createElement('video');
+      el.preload = 'metadata';
+      el.muted = true;
+      el.onloadedmetadata = () => done(isFinite(el.duration) && el.duration > 0 ? el.duration : null);
+      el.onerror = () => done(null);
+      setTimeout(() => done(null), 20000); // メタデータが読めない形式で固まらないよう保険
+      el.src = url;
+    } catch (err) {
+      done(null);
+    }
+  });
+}
+
+// "12:34" / "1:02:03" → 秒
+function timeStringToSeconds(str) {
+  const parts = String(str).split(':').map(p => parseInt(p, 10));
+  if (parts.some(isNaN)) return null;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return null;
+}
+
+// 秒 → "12:34"（1時間以上は "1:02:03"）
+function secondsToTimeString(total) {
+  const s = Math.max(0, Math.round(total));
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${pad(mm)}:${pad(ss)}`;
+}
+
+async function transcribeInterviewWithGemini(fileUri, mimeType, apiKey, modelName, durationSeconds) {
   // v2.7.0: 文字起こしは常にFlash系モデルを使用（品質同等で2〜4倍高速）
   // ユーザー選択モデル(gemini-2.5-pro等)は評価(Node 5)専用
   // 提供終了した gemini-2.0-flash は候補から除外済み
   const candidateModels = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-2.5-flash'];
 
-  const transcriptionPrompt = `あなたは面接の文字起こし・話者分離システムです。
-提供された音声ファイルを分析し、面接官と応募者の会話内容をタイムスタンプ付きで順番に書き起こしてください。
+  // v2.7.7: 30分の動画を1回のリクエストで投げると、出力上限に達していなくても
+  //         モデルが途中で勝手に打ち切る（finishReason は STOP のまま）ことがある。
+  //         同じファイルでも成功したり11分で止まったりと不安定だったのはこれが原因。
+  //         video_metadata の start_offset / end_offset で区間を明示して分割取得し、
+  //         「どこまで取れたか」をコード側で保証する。
+  const SEGMENT_SECONDS = 480; // 8分ずつ
+
+  // モデルによって出力上限が違うため、400（INVALID_ARGUMENT）で弾かれたら段階的に下げる。
+  // 下げても打ち切られた分は継続生成で拾えるので、最悪でも欠落はしない。
+  const OUTPUT_TOKEN_STEPS = [65536, 32768, 16384, 8192];
+  const MAX_CONTINUATIONS = 6;
+  let outputTokenLimit = OUTPUT_TOKEN_STEPS[0];
+  let clippingSupported = true; // video_metadata が使えるか（400 が返ったら false に落とす）
+
+  const baseRules = `あなたは面接の文字起こし・話者分離システムです。
+提供された音声を分析し、面接官と応募者の会話内容をタイムスタンプ付きで順番に書き起こしてください。
 
 【出力フォーマット】
 [分:秒] 話者: 発言内容
 
 【ルール】
 1. 話者は「面接官」または「応募者」として識別してください。
-2. 各主要な質問や回答の開始時刻を[00:15]のような形式で記載してください。
-3. 挨拶、自己紹介、質疑応答の一連の流れを正確に記録してください。
-4. 余計な解説やスコアは含めず、書き起こしテキストのみを出力してください。`;
+2. 各発言の開始時刻を[00:15]のような形式で記載してください。
+3. 挨拶、自己紹介、質疑応答の一連の流れを、省略せず最後まで正確に記録してください。
+4. 要約・中略・「（以下略）」の類は禁止です。聞こえた発言をすべて書き起こしてください。
+5. 余計な解説やスコアは含めず、書き起こしテキストのみを出力してください。`;
 
-  // v2.7.6: 30分の面接では出力が 8192 トークンに収まらず、モデルが MAX_TOKENS で
-  //         打ち切られていた。しかも finishReason を見ていなかったため、
-  //         途中までの文字起こしが「正常終了」として扱われ、後半が丸ごと欠落していた。
-  //         上限を引き上げたうえで、打ち切られた場合は続きを生成して結合する。
-  // モデルによって出力上限が違うため、400（INVALID_ARGUMENT）で弾かれたら段階的に下げる。
-  // 下げても打ち切られた分は下の継続生成で拾えるので、最悪でも欠落はしない。
-  const OUTPUT_TOKEN_STEPS = [65536, 32768, 16384, 8192];
-  const MAX_CONTINUATIONS = 10;
-  let outputTokenLimit = OUTPUT_TOKEN_STEPS[0];
+  function buildPrompt(segment, continuationTail) {
+    let prompt = baseRules;
 
-  // 継続生成の指示に使う「直前までの末尾」を取り出す
-  const tailOf = (text, lineCount) => text.split('\n').filter(l => l.trim()).slice(-lineCount).join('\n');
-  const lastTimeOf = (text) => {
-    const matches = text.match(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g);
-    return matches && matches.length ? matches[matches.length - 1].replace(/[\[\]]/g, '') : '不明';
-  };
+    if (segment) {
+      prompt += `
 
-  async function callTranscription(transcribeModel, continuationTail) {
-    const promptText = continuationTail
-      ? `${transcriptionPrompt}
+【対象区間】
+この音声のうち ${secondsToTimeString(segment.start)} 〜 ${secondsToTimeString(segment.end)} の部分だけを書き起こしてください。
+タイムスタンプは、この区間の先頭を [00:00] とした相対時刻で出力してください。
+区間の終わりまで、途中で止めずに書き起こしてください。`;
+    }
+
+    if (continuationTail) {
+      prompt += `
 
 【続きの生成】
-この音声の文字起こしは途中までしか完了していません。以下は出力済みテキストの末尾です。
+この区間の文字起こしは途中までしか完了していません。以下は出力済みテキストの末尾です。
 ---
 ${continuationTail}
 ---
-上の続きから、音声の最後まで同じフォーマットで書き起こしてください。
-すでに出力済みの部分は繰り返さず、続きだけを出力してください。`
-      : transcriptionPrompt;
+上の続きから、区間の終わりまで同じフォーマットで書き起こしてください。
+すでに出力済みの部分は繰り返さず、続きだけを出力してください。`;
+    }
 
-    const transcriptionRequestBody = {
+    return prompt;
+  }
+
+  async function callGemini(model, segment, continuationTail) {
+    const filePart = {
+      file_data: {
+        mime_type: mimeType,
+        file_uri: fileUri
+      }
+    };
+
+    if (segment && clippingSupported) {
+      filePart.video_metadata = {
+        start_offset: `${Math.floor(segment.start)}s`,
+        end_offset: `${Math.ceil(segment.end)}s`
+      };
+    }
+
+    const requestBody = {
       contents: [
         {
-          parts: [
-            {
-              file_data: {
-                mime_type: mimeType,
-                file_uri: fileUri
-              }
-            },
-            {
-              text: promptText
-            }
-          ]
+          parts: [filePart, { text: buildPrompt(segment, continuationTail) }]
         }
       ],
       generationConfig: {
@@ -1728,18 +1791,17 @@ ${continuationTail}
       }
     };
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=${apiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(transcriptionRequestBody)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      const err = new Error(`API Error (${response.status}): ${errText.substring(0, 200)}`);
+      const err = new Error(`API Error (${response.status}): ${errText.substring(0, 300)}`);
       err.status = response.status;
+      err.body = errText;
       throw err;
     }
 
@@ -1751,59 +1813,166 @@ ${continuationTail}
     return { text, finishReason: candidate ? (candidate.finishReason || "") : "" };
   }
 
-  // 出力上限がモデルに拒否された（400）ときだけ、上限を1段階ずつ下げて再試行する
-  async function callTranscriptionSafely(transcribeModel, continuationTail) {
+  // 400 のときだけ、原因に応じて条件を落として再試行する
+  async function callGeminiSafely(model, segment, continuationTail) {
     while (true) {
       try {
-        return await callTranscription(transcribeModel, continuationTail);
+        return await callGemini(model, segment, continuationTail);
       } catch (err) {
-        const stepIndex = OUTPUT_TOKEN_STEPS.indexOf(outputTokenLimit);
-        if (err.status === 400 && stepIndex >= 0 && stepIndex < OUTPUT_TOKEN_STEPS.length - 1) {
-          outputTokenLimit = OUTPUT_TOKEN_STEPS[stepIndex + 1];
-          logToConsole('error', `[WARNING] ${transcribeModel} が maxOutputTokens=${OUTPUT_TOKEN_STEPS[stepIndex]} を受け付けませんでした。${outputTokenLimit} に下げて再試行します...`);
+        if (err.status !== 400) throw err;
+
+        // video_metadata（区間指定）が受け付けられない → 分割をやめて全体を1回で取る
+        if (segment && clippingSupported && /video_?metadata|start_?offset|end_?offset/i.test(err.body || '')) {
+          clippingSupported = false;
+          logToConsole('error', `[WARNING] ${model} は区間指定（video_metadata）に対応していないため、分割なしで文字起こしします...`);
           continue;
         }
+
+        const stepIndex = OUTPUT_TOKEN_STEPS.indexOf(outputTokenLimit);
+        if (stepIndex >= 0 && stepIndex < OUTPUT_TOKEN_STEPS.length - 1) {
+          outputTokenLimit = OUTPUT_TOKEN_STEPS[stepIndex + 1];
+          logToConsole('error', `[WARNING] ${model} が maxOutputTokens=${OUTPUT_TOKEN_STEPS[stepIndex]} を受け付けませんでした。${outputTokenLimit} に下げて再試行します...`);
+          continue;
+        }
+
         throw err;
       }
     }
   }
 
+  // 1区間（segment が null なら全体）を、出力上限で切れていれば継ぎ足しながら取り切る
+  async function transcribeSegment(model, segment) {
+    const tailOf = (text, lineCount) => text.split('\n').filter(l => l.trim()).slice(-lineCount).join('\n');
+
+    let result = await callGeminiSafely(model, segment, null);
+    if (!result.text) return { text: "", finishReason: result.finishReason };
+
+    let text = result.text;
+    let continuations = 0;
+
+    while (result.finishReason === 'MAX_TOKENS' && continuations < MAX_CONTINUATIONS) {
+      continuations++;
+      logToConsole('info', `[INFO] 出力上限に達したため、続きを生成します（${continuations}/${MAX_CONTINUATIONS}回目）...`);
+      result = await callGeminiSafely(model, segment, tailOf(text, 6));
+      if (!result.text) break;
+      text += '\n' + result.text;
+    }
+
+    if (result.finishReason === 'MAX_TOKENS') {
+      logToConsole('error', `[WARNING] 継続生成の上限（${MAX_CONTINUATIONS}回）に達しました。この区間の末尾が欠けている可能性があります。`);
+    }
+
+    return { text, finishReason: result.finishReason };
+  }
+
+  const LINE_REGEX = /^\[(\d{1,3}:\d{2}(?::\d{2})?)\]\s*(面接官|応募者|Interviewer|Applicant)\s*:\s*(.*)$/;
+
+  // 1区間のテキストを配列に変換する。モデルが相対時刻／絶対時刻のどちらを返しても
+  // 正しい絶対秒になるよう、区間内の最小タイムスタンプを見て判定する。
+  function parseSegmentText(text, segment) {
+    let cleanText = text.trim();
+    if (cleanText.startsWith('```')) {
+      const l = cleanText.split('\n');
+      if (l[0].startsWith('```')) l.shift();
+      if (l[l.length - 1].trim() === '```') l.pop();
+      cleanText = l.join('\n');
+    }
+
+    const parsed = [];
+    for (const line of cleanText.split('\n')) {
+      const match = line.trim().match(LINE_REGEX);
+      if (!match) continue;
+      const seconds = timeStringToSeconds(match[1]);
+      if (seconds === null) continue;
+      let speaker = match[2].trim();
+      if (speaker === 'Interviewer') speaker = '面接官';
+      if (speaker === 'Applicant') speaker = '応募者';
+      parsed.push({ seconds, speaker, text: match[3].trim() });
+    }
+
+    if (!segment || segment.start === 0 || parsed.length === 0) return parsed;
+
+    // 区間の開始より前の時刻が1つでもあれば「相対時刻」とみなしてオフセットを足す
+    const minSeconds = Math.min(...parsed.map(p => p.seconds));
+    if (minSeconds < segment.start) {
+      parsed.forEach(p => { p.seconds += segment.start; });
+    }
+    return parsed;
+  }
+
+  // 全区間を順に処理する。区間指定が拒否された時点で打ち切り、呼び出し側に知らせる。
+  async function runAllSegments(model, segs) {
+    const entries = [];
+    let emptySegments = 0;
+
+    for (let i = 0; i < segs.length; i++) {
+      const segment = segs[i];
+      if (segment) {
+        logToConsole('system', `[SYSTEM] 区間 ${i + 1}/${segs.length}（${secondsToTimeString(segment.start)}〜${secondsToTimeString(segment.end)}）を文字起こし中...`);
+      }
+
+      const segResult = await transcribeSegment(model, segment);
+
+      if (segment && !clippingSupported) {
+        return { entries: [], emptySegments: 0, clippingRejected: true };
+      }
+
+      const parsed = parseSegmentText(segResult.text, segment);
+      if (parsed.length === 0) {
+        emptySegments++;
+        logToConsole('error', `[WARNING] 区間 ${i + 1}/${segs.length} から発言を取得できませんでした（finishReason: ${segResult.finishReason || '不明'}）。`);
+      }
+      entries.push(...parsed);
+    }
+
+    return { entries, emptySegments, clippingRejected: false };
+  }
+
+  // ---- 区間の組み立て
+  const segments = [];
+  if (durationSeconds && durationSeconds > SEGMENT_SECONDS) {
+    for (let start = 0; start < durationSeconds; start += SEGMENT_SECONDS) {
+      segments.push({ start, end: Math.min(start + SEGMENT_SECONDS, Math.ceil(durationSeconds)) });
+    }
+    logToConsole('info', `[INFO] 動画の長さ ${secondsToTimeString(durationSeconds)} を ${segments.length} 区間（各${SEGMENT_SECONDS / 60}分）に分割して文字起こしします。`);
+  } else {
+    segments.push(null);
+    if (!durationSeconds) {
+      logToConsole('error', `[WARNING] 動画の長さを取得できなかったため、分割せずに文字起こしします（途中で切れる可能性があります）。`);
+    }
+  }
+
+  // ---- モデルを1つ選び、その1つで全区間を処理する
   let lastError = null;
-  let rawText = "";
   let usedModel = "";
+  let collected = [];
 
   for (const transcribeModel of candidateModels) {
     logToConsole('info', `[INFO] 【文字起こし】音声データから話者分離付きの文字起こしを生成中 (使用モデル: ${transcribeModel})...`);
     logToConsole('cmd', `> curl -X POST "https://generativelanguage.googleapis.com/v1beta/models/${transcribeModel}:generateContent?key=..."`);
 
     try {
-      let result = await callTranscriptionSafely(transcribeModel, null);
+      let run = await runAllSegments(transcribeModel, segments);
 
-      if (!result.text) {
-        logToConsole('error', `[WARNING] ${transcribeModel} の応答が空でした（finishReason: ${result.finishReason || '不明'}）。次のモデルを試行します...`);
+      // 区間指定（video_metadata）が使えないと判明したら、分割をやめて全体1回で取り直す
+      if (run.clippingRejected) {
+        run = await runAllSegments(transcribeModel, [null]);
+      }
+
+      const results = run.entries;
+      const emptySegments = run.emptySegments;
+
+      if (results.length === 0) {
+        logToConsole('error', `[WARNING] ${transcribeModel} では発言を取得できませんでした。次のモデルを試行します...`);
         continue;
       }
 
-      rawText = result.text;
+      if (emptySegments > 0) {
+        logToConsole('error', `[WARNING] ${segments.length} 区間中 ${emptySegments} 区間が空でした。文字起こしに欠落がある可能性があります。`);
+      }
+
+      collected = results;
       usedModel = transcribeModel;
-
-      // 出力上限で打ち切られている限り、続きを生成して繋ぐ
-      let continuations = 0;
-      while (result.finishReason === 'MAX_TOKENS' && continuations < MAX_CONTINUATIONS) {
-        continuations++;
-        logToConsole('info', `[INFO] 出力上限に達しました（${lastTimeOf(rawText)} まで生成済み）。続きを生成します（${continuations}/${MAX_CONTINUATIONS}回目）...`);
-        result = await callTranscriptionSafely(transcribeModel, tailOf(rawText, 6));
-        if (!result.text) {
-          logToConsole('error', `[WARNING] 続きの応答が空でした。ここまでの文字起こしで処理を続行します。`);
-          break;
-        }
-        rawText += '\n' + result.text;
-      }
-
-      if (result.finishReason === 'MAX_TOKENS') {
-        logToConsole('error', `[WARNING] 継続生成の上限（${MAX_CONTINUATIONS}回）に達しました。文字起こしが音声の末尾まで届いていない可能性があります（${lastTimeOf(rawText)} まで）。`);
-      }
-
       break;
     } catch (err) {
       console.warn(`Exception calling ${transcribeModel}:`, err);
@@ -1812,60 +1981,38 @@ ${continuationTail}
     }
   }
 
-  if (!rawText || rawText.trim() === "") {
+  if (collected.length === 0) {
     throw new Error(`全Geminiモデルでの文字起こし生成に失敗しました。詳細: ${lastError ? lastError.message : '応答テキストが空でした'}`);
   }
 
-  // Parse plain text transcription to array of objects
-  let cleanText = rawText.trim();
-  if (cleanText.startsWith('```')) {
-    const lines = cleanText.split('\n');
-    if (lines[0].startsWith('```')) {
-      lines.shift();
-    }
-    if (lines[lines.length - 1] === '```') {
-      lines.pop();
-    }
-    cleanText = lines.join('\n');
-  }
+  // ---- 時系列に並べ、区間の継ぎ目で生じる重複を除去
+  collected.sort((a, b) => a.seconds - b.seconds);
 
-  const lines = cleanText.split('\n');
   const transcription = [];
-  const lineRegex = /^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*(面接官|応募者|Interviewer|Applicant)\s*:\s*(.*)$/;
-  const seen = new Set(); // 継続生成のつなぎ目で同じ発言が重複するのを防ぐ
-  for (const line of lines) {
-    const match = line.trim().match(lineRegex);
-    if (match) {
-      let speaker = match[2].trim();
-      if (speaker === 'Interviewer') speaker = '面接官';
-      if (speaker === 'Applicant') speaker = '応募者';
-      const entry = {
-        time: match[1],
-        speaker: speaker,
-        text: match[3].trim()
-      };
-      const key = `${entry.time}|${entry.speaker}|${entry.text}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      transcription.push(entry);
-    }
-  }
-
-  if (transcription.length === 0) {
-    logToConsole('error', `[WARNING] 文字起こしの解析に失敗したため、テキスト行としてフォールバックします。`);
-    lines.forEach((line, idx) => {
-      if (line.trim()) {
-        transcription.push({
-          time: '00:00',
-          speaker: '面接官',
-          text: line.trim()
-        });
-      }
+  const seen = new Set();
+  for (const entry of collected) {
+    const key = `${entry.speaker}|${entry.text}`;
+    if (entry.text && seen.has(key)) continue;
+    if (entry.text) seen.add(key);
+    transcription.push({
+      time: secondsToTimeString(entry.seconds),
+      speaker: entry.speaker,
+      text: entry.text
     });
   }
 
   const coverage = transcription.length ? transcription[transcription.length - 1].time : '不明';
-  logToConsole('success', `[SUCCESS] 【第1段階完了】高精度文字起こしデータを受信しました（発言数: ${transcription.length} / 最終タイムスタンプ: ${coverage}）。`);
+  const expected = durationSeconds ? ` / 動画長: ${secondsToTimeString(durationSeconds)}` : '';
+  logToConsole('success', `[SUCCESS] 【第1段階完了】高精度文字起こしデータを受信しました（発言数: ${transcription.length} / 最終タイムスタンプ: ${coverage}${expected} / モデル: ${usedModel}）。`);
+
+  // 動画長の8割に届いていなければ、欠落として明示的に警告する
+  if (durationSeconds && transcription.length) {
+    const lastSeconds = timeStringToSeconds(coverage) || 0;
+    if (lastSeconds < durationSeconds * 0.8) {
+      logToConsole('error', `[WARNING] 文字起こしが動画の末尾（${secondsToTimeString(durationSeconds)}）に届いていません（${coverage} まで）。再分析すると改善する場合があります。`);
+    }
+  }
+
   return transcription;
 }
 
@@ -2261,7 +2408,12 @@ async function runPipelineStep(apiKey, isFast) {
         try {
           const modelSelect = document.getElementById('settings-model-select');
           const modelName = modelSelect ? modelSelect.value : 'gemini-3.7-flash';
-          const apiResult = await transcribeInterviewWithGemini(uploadedFileMeta.uri, uploadedFileMeta.mimeType, apiKey, modelName);
+          // v2.7.7: 実尺を取って区間分割の基準にする（取れなければ分割なしにフォールバック）
+          const mediaDuration = await getMediaDurationSeconds(importedFile);
+          if (mediaDuration) {
+            logToConsole('info', `[INFO] 動画の長さを検出しました: ${secondsToTimeString(mediaDuration)}`);
+          }
+          const apiResult = await transcribeInterviewWithGemini(uploadedFileMeta.uri, uploadedFileMeta.mimeType, apiKey, modelName, mediaDuration);
           currentTranscription = apiResult;
           advancePipeline(apiKey, isFast);
         } catch (err) {
