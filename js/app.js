@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.7.7';
+const APP_VERSION = 'v2.7.9';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -365,6 +365,105 @@ const DEMO_VIDEO_KEYS = DEMO_VIDEOS.map(v => v.key);
 let HISTORY_DATA = [];
 let VIDEOS_DATA = [];
 let firebaseDb = null;
+let SHARED_API_KEY = '';
+
+// 既定の Firebase 接続先。設定画面の初期値・起動時の接続・共有APIキーの REST 取得の
+// 3か所で同じ値を使う（以前は2か所にベタ書きされていて、片方だけ直すと食い違った）。
+const DEFAULT_FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDObpH4ht2ky2BOXMFKnKezX3L6izKPicg",
+  authDomain: "interview-feedback-team.firebaseapp.com",
+  projectId: "interview-feedback-team",
+  storageBucket: "interview-feedback-team.firebasestorage.app",
+  messagingSenderId: "116272718812",
+  appId: "1:116272718812:web:dd78b59c9404bfa5fbe519"
+};
+
+function getFirebaseConfig() {
+  const saved = localStorage.getItem('gemini_firebase_config');
+  if (saved) {
+    try {
+      return JSON.parse(saved);
+    } catch (e) {
+      console.warn('保存された Firebase 設定が壊れているため、既定値を使います:', e);
+    }
+  }
+  return DEFAULT_FIREBASE_CONFIG;
+}
+
+// ===== 共有 Gemini APIキーの取得 =====
+// 共有キーは Firestore の shared_settings/gemini に置いてあり、通常は SDK の
+// onSnapshot で届く。ただし onSnapshot は常時接続（WebChannel / long polling）を張るため、
+// 社内プロキシ・広告ブロッカー・拡張機能に塞がれると「いつまでも届かない」状態になる。
+// そのとき同期バッジは接続確認前に 🟢 を出してしまうので本人には正常に見え、
+// 分析を押した瞬間だけ「APIキーが設定されていません」が出る（他の人の環境で実際に起きた）。
+//
+// そこで、ふつうの HTTPS GET 1回で済む REST でも並行して取りに行き、
+// 取れたら localStorage に控える。次回以降は起動直後から共有キーが使える。
+// この控えを消すと、初回表示のたびに通信待ちが発生する。
+let sharedApiKeyPromise = null;
+
+function loadSharedApiKeyViaRest() {
+  if (sharedApiKeyPromise) return sharedApiKeyPromise;
+
+  // 前回の控えがあれば、通信の結果を待たずに即使えるようにしておく
+  const cached = localStorage.getItem('shared_gemini_api_key');
+  if (cached && !SHARED_API_KEY) SHARED_API_KEY = cached;
+
+  const config = getFirebaseConfig();
+  const url = `https://firestore.googleapis.com/v1/projects/${config.projectId}`
+            + `/databases/(default)/documents/shared_settings/gemini?key=${config.apiKey}`;
+
+  sharedApiKeyPromise = fetch(url)
+    .then(res => {
+      // 404 は「共有が解除された」。通信エラーと区別して控えを消す
+      if (res.status === 404) return { __missing: true };
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(json => {
+      if (json && json.__missing) {
+        SHARED_API_KEY = '';
+        localStorage.removeItem('shared_gemini_api_key');
+        return '';
+      }
+      const key = json && json.fields && json.fields.apiKey && json.fields.apiKey.stringValue;
+      if (key) {
+        SHARED_API_KEY = key;
+        localStorage.setItem('shared_gemini_api_key', key);
+      }
+      return SHARED_API_KEY;
+    })
+    .catch(err => {
+      // 取れなくても控えがあればそれで動く。ここで例外を投げると分析が止まる
+      console.warn('共有APIキーの取得に失敗しました:', err);
+      return SHARED_API_KEY;
+    })
+    .then(key => {
+      // 取れなかったときは記憶を捨てて、次に呼ばれたらもう一度取りに行けるようにする
+      if (!key) sharedApiKeyPromise = null;
+      try { updateApiKeyStatus(); } catch (e) {}
+      return key;
+    });
+
+  return sharedApiKeyPromise;
+}
+
+// 分析開始時に使うキーを決める。
+// 端末に自分のキーがあればそれ、無ければ共有キー。共有キーがまだ届いていない
+// だけの可能性があるので、「無い」と判断する前に一度だけ取得を待つ。
+async function resolveApiKey() {
+  const input = document.getElementById('settings-api-key');
+  const localKey = input ? input.value.trim() : '';
+  if (localKey) return localKey;
+  if (SHARED_API_KEY) return SHARED_API_KEY;
+
+  showToast('🔑', '共有APIキーを確認しています...');
+  await Promise.race([
+    loadSharedApiKeyViaRest(),
+    new Promise(resolve => setTimeout(resolve, 8000))
+  ]);
+  return SHARED_API_KEY || '';
+}
 
 // クラウド保存の失敗は今まで console にしか出ておらず、
 // 「追加したのに次に開くと消えている」の原因が画面からまったく分からなかった。
@@ -550,6 +649,7 @@ function setupFirestoreRealtimeSync() {
       const data = doc.data();
       if (data.apiKey) {
         SHARED_API_KEY = data.apiKey;
+        localStorage.setItem('shared_gemini_api_key', data.apiKey);
         
         // Update checkbox state on this device
         const shareCheckbox = document.getElementById('settings-share-api-key');
@@ -559,7 +659,9 @@ function setupFirestoreRealtimeSync() {
         }
       }
     } else {
+      // 共有が解除されている。控えも消す
       SHARED_API_KEY = '';
+      localStorage.removeItem('shared_gemini_api_key');
       const shareCheckbox = document.getElementById('settings-share-api-key');
       if (shareCheckbox) shareCheckbox.checked = false;
     }
@@ -753,7 +855,6 @@ function showFeedbackPage(key) {
 // ===== Charts =====
 let trendChartInstance, radarChartInstance, historyChartInstance, gradeDistChartInstance;
 let historyChartType = 'all';
-let SHARED_API_KEY = '';
 let currentAnalysisVideoKey = '';
 
 function initTrendChart() {
@@ -2204,18 +2305,23 @@ function proceedWithSimulationFromFileMissing() {
   startAgentPipeline();
 }
 
-function startAgentPipeline() {
-  if (pipelineRunning) return;
-  
+let pipelineStarting = false;
+
+async function startAgentPipeline() {
+  if (pipelineRunning || pipelineStarting) return;
+
   if (!importedFile && !selectedPresetKey) {
     showToast('⚠️', 'ファイルを選択するか、プリセットを指定してください。');
     return;
   }
-  
-  const apiKeyInput = document.getElementById('settings-api-key');
-  let apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
-  if (!apiKey && SHARED_API_KEY) {
-    apiKey = SHARED_API_KEY;
+
+  // キーの解決は共有キーの取得を待つことがあるので、その間の二重起動を止める
+  pipelineStarting = true;
+  let apiKey = '';
+  try {
+    apiKey = await resolveApiKey();
+  } finally {
+    pipelineStarting = false;
   }
 
   // Check if trying to run a custom file without an API key
@@ -3443,15 +3549,7 @@ function setupApiKeyEvents() {
     if (savedConfig) {
       firebaseConfigInput.value = savedConfig;
     } else {
-      const defaultConfig = {
-        apiKey: "AIzaSyDObpH4ht2ky2BOXMFKnKezX3L6izKPicg",
-        authDomain: "interview-feedback-team.firebaseapp.com",
-        projectId: "interview-feedback-team",
-        storageBucket: "interview-feedback-team.firebasestorage.app",
-        messagingSenderId: "116272718812",
-        appId: "1:116272718812:web:dd78b59c9404bfa5fbe519"
-      };
-      firebaseConfigInput.value = JSON.stringify(defaultConfig, null, 2);
+      firebaseConfigInput.value = JSON.stringify(DEFAULT_FIREBASE_CONFIG, null, 2);
     }
   }
   
@@ -3536,7 +3634,47 @@ function updateModelSettingsText() {
   }
 }
 
+// ===== 管理者表示の切り替え =====
+// APIキー欄と Firebase 設定は、面接官が使うぶんには不要で、むしろ
+// 共有キーの取得経路をそのまま晒すことになる。既定では設定画面から隠し、
+// URL に ?admin=1 を付けて開いたときだけ表示する（この端末に記憶される）。
+// 解除は ?admin=0 か、設定画面の「管理者用の設定を隠す」ボタン。
+//
+// ※ これは「画面に出さない」だけで、鍵そのものを守る仕組みではない。
+//   ブラウザで動く以上、通信内容を見れば共有キーは取り出せる。
+//   悪用を本当に防ぐなら Google Cloud 側でキーに使用上限を掛けること。
+function isAdminMode() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const flag = params.get('admin');
+    if (flag === '1') {
+      localStorage.setItem('admin_mode', '1');
+      return true;
+    }
+    if (flag === '0') {
+      localStorage.removeItem('admin_mode');
+      return false;
+    }
+    return localStorage.getItem('admin_mode') === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+function applyAdminMode() {
+  document.body.classList.toggle('admin-mode', isAdminMode());
+}
+
+function disableAdminMode() {
+  localStorage.removeItem('admin_mode');
+  // URL に ?admin=1 が残っていると再読み込みで復活するので消してから戻る
+  location.href = location.pathname;
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  // 管理者以外に見せない要素の表示可否は、何よりも先に決める
+  applyAdminMode();
+
   // フッターのバージョン表記を、実際に読み込まれた app.js の値で上書きする。
   // ブラウザが古い app.js をキャッシュしていれば古い値が出るので、これで新旧を判別できる
   const versionEl = document.querySelector('.version');
@@ -3592,22 +3730,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     VIDEOS_DATA = [...DEMO_VIDEOS];
   }
 
+  // 共有APIキーは Firestore の常時接続に依存せず、起動直後に REST でも取りに行く。
+  // これが済んでいれば、分析ボタンを押した時点で待たされない。
+  try {
+    loadSharedApiKeyViaRest();
+  } catch (e) {
+    console.error('共有APIキーの取得を開始できませんでした:', e);
+  }
+
   // Initialize Firebase if config is saved
   try {
     let savedConfig = localStorage.getItem('gemini_firebase_config');
     const globalSyncBadge = document.getElementById('global-sync-badge');
     
     if (!savedConfig) {
-      // Default fallback config for automatic connection out of the box
-      const defaultConfig = {
-        apiKey: "AIzaSyDObpH4ht2ky2BOXMFKnKezX3L6izKPicg",
-        authDomain: "interview-feedback-team.firebaseapp.com",
-        projectId: "interview-feedback-team",
-        storageBucket: "interview-feedback-team.firebasestorage.app",
-        messagingSenderId: "116272718812",
-        appId: "1:116272718812:web:dd78b59c9404bfa5fbe519"
-      };
-      savedConfig = JSON.stringify(defaultConfig);
+      // 設定が無い端末でも、そのままチームのクラウドに繋がるようにする
+      savedConfig = JSON.stringify(DEFAULT_FIREBASE_CONFIG);
     }
     
     if (savedConfig) {

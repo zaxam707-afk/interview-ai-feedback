@@ -8,7 +8,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <link rel="stylesheet" href="css/style.css?v=2.5.8" />
+  <link rel="stylesheet" href="css/style.css?v=2.7.9" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -47,7 +47,7 @@
 
     <div class="sidebar-footer">
       <!-- デプロイのたびに更新する。js/app.js?v= と必ず揃えること（画面から新旧を判別するため） -->
-      <div class="version">v2.7.7 Demo ・ Powered by Gemini AI (⚡ Pipeline Turbo)</div>
+      <div class="version">v2.7.9 Demo ・ Powered by Gemini AI (⚡ Pipeline Turbo)</div>
     </div>
   </nav>
 
@@ -520,7 +520,7 @@
           <div class="card-header">
             <div class="card-title">🤖 Gemini API</div>
           </div>
-          <div class="score-bar-container">
+          <div class="score-bar-container admin-only">
             <div class="score-bar-header">
               <span class="score-bar-label" style="font-size:12px;color:var(--text-muted)">APIキー</span>
               <span class="status-badge pending" id="api-key-status" style="font-size:10px">シミュレーション</span>
@@ -548,7 +548,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card admin-only">
           <div class="card-header">
             <div class="card-title">🔥 Firebase 共有設定</div>
           </div>
@@ -567,6 +567,12 @@
           <div class="mt-12" style="font-size:11px;color:var(--text-muted);line-height:1.5;">
             💡 ここにFirebaseの設定JSONを貼り付けると、他のメンバーと評価履歴やダッシュボードを共有できます。空欄の場合は従来通り自分のみ（ローカル保存）で動作します。
           </div>
+          <div class="mt-12" style="font-size:11px;color:var(--text-muted);line-height:1.5;">
+            🔑 このカードとAPIキー欄は管理者にだけ表示されています（URL に <code>?admin=1</code> を付けて開いた端末）。
+          </div>
+          <button class="btn btn-secondary" onclick="disableAdminMode()" style="width:100%;margin-top:10px;">
+            🙈 管理者用の設定を隠す
+          </button>
         </div>
 
         <!-- Data Recovery Card -->
@@ -655,15 +661,16 @@
 <div id="simulation-confirm-modal" class="modal-overlay">
   <div class="modal" style="max-width: 480px; text-align: center;">
     <div style="font-size: 40px; margin-bottom: 16px; animation: pulse-badge 2s infinite;">⚠️</div>
-    <div class="modal-title" style="margin-bottom: 12px; color: var(--accent-orange);">APIキーが設定されていません</div>
+    <div class="modal-title" style="margin-bottom: 12px; color: var(--accent-orange);">共有APIキーを読み込めませんでした</div>
     <p style="color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; margin-bottom: 24px; text-align: left;">
-      独自のファイルがインポートされていますが、<strong>Gemini APIキー</strong>が設定されていないため、実際の音声解析を行うことができません。<br><br>
-      このまま実行すると、実際の音声は解析されず、<strong>デモ用の模擬フィードバックデータ（固定内容）</strong>が表示されます。<br><br>
-      お持ちの動画・音声ファイルで実際の高精度AI分析を行うには、まず「設定」タブでAPIキーを設定してください。
+      通常は<strong>チーム共有の Gemini APIキー</strong>が自動で使われるため、各自でキーを設定する必要はありません。今回はその共有キーを取得できませんでした。<br><br>
+      社内プロキシ・VPN や、広告ブロッカーなどの拡張機能が通信を止めている可能性があります。まず<strong>ページを再読み込み</strong>してから、もう一度お試しください。<br><br>
+      このまま実行すると、実際の音声は解析されず、<strong>デモ用の模擬フィードバックデータ（固定内容）</strong>が表示されます。
     </p>
-    <div class="flex gap-12" style="justify-content: center; gap: 12px;">
-      <button class="btn btn-secondary" onclick="goToSettingsFromModal()">⚙️ 設定画面へ</button>
-      <button class="btn btn-primary" onclick="proceedWithSimulationFromModal()" style="background: linear-gradient(135deg, var(--accent-orange), #f97316); color: #fff; border: none;">デモ用データで進める</button>
+    <div class="flex gap-12" style="justify-content: center; gap: 12px; flex-wrap: wrap;">
+      <button class="btn btn-primary" onclick="location.reload()">🔄 再読み込み</button>
+      <button class="btn btn-secondary admin-only" onclick="goToSettingsFromModal()">⚙️ 設定画面へ</button>
+      <button class="btn btn-secondary" onclick="proceedWithSimulationFromModal()">デモ用データで進める</button>
     </div>
   </div>
 </div>
@@ -696,6 +703,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
-<script src="js/app.js?v=2.7.7&t=1756364400"></script>
+<script src="js/app.js?v=2.7.9&t=1788314064"></script>
 </body>
 </html>

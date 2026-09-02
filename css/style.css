@@ -1262,3 +1262,14 @@ select option {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+
+/* ===== 管理者専用の表示 =====
+   APIキー欄と Firebase 設定は既定で隠す。URL に ?admin=1 を付けて開くと
+   body.admin-mode が付き、表示される（詳細は app.js の isAdminMode）。 */
+.admin-only {
+  display: none !important;
+}
+body.admin-mode .admin-only {
+  display: block !important;
+}
