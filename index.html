@@ -8,7 +8,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <link rel="stylesheet" href="css/style.css?v=2.7.9" />
+  <link rel="stylesheet" href="css/style.css?v=2.8.0" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -47,7 +47,7 @@
 
     <div class="sidebar-footer">
       <!-- デプロイのたびに更新する。js/app.js?v= と必ず揃えること（画面から新旧を判別するため） -->
-      <div class="version">v2.7.9 Demo ・ Powered by Gemini AI (⚡ Pipeline Turbo)</div>
+      <div class="version">v2.8.0 Demo ・ Powered by Gemini AI (⚡ Pipeline Turbo)</div>
     </div>
   </nav>
 
@@ -590,6 +590,14 @@
             </button>
             <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
               <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:8px;">
+                実際の録画なのに、評価の中身がデモ用の模擬データになっているものを探し、<strong>録画の行は残したまま「未分析」に戻します</strong>。ファイルを読み込ませて再分析できます。
+              </div>
+              <button class="btn btn-primary" onclick="resetMockResults()" style="width:100%;">
+                🩹 デモ結果になっている分析を未分析に戻す
+              </button>
+            </div>
+            <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+              <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:8px;">
                 デモ／シミュレーションで生成されたデータを削除します。実際にアップロード・分析した動画データは保持されます。
               </div>
               <button class="btn" onclick="cleanupDemoData()" style="width:100%; background:var(--accent-red); color:white; border:none;">
@@ -665,12 +673,12 @@
     <p style="color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; margin-bottom: 24px; text-align: left;">
       通常は<strong>チーム共有の Gemini APIキー</strong>が自動で使われるため、各自でキーを設定する必要はありません。今回はその共有キーを取得できませんでした。<br><br>
       社内プロキシ・VPN や、広告ブロッカーなどの拡張機能が通信を止めている可能性があります。まず<strong>ページを再読み込み</strong>してから、もう一度お試しください。<br><br>
-      このまま実行すると、実際の音声は解析されず、<strong>デモ用の模擬フィードバックデータ（固定内容）</strong>が表示されます。
+      APIキーが無い状態では実際の音声解析はできません。デモ用の模擬データが本物の評価として保存されるのを防ぐため、この状態では分析を実行しません。
     </p>
     <div class="flex gap-12" style="justify-content: center; gap: 12px; flex-wrap: wrap;">
       <button class="btn btn-primary" onclick="location.reload()">🔄 再読み込み</button>
       <button class="btn btn-secondary admin-only" onclick="goToSettingsFromModal()">⚙️ 設定画面へ</button>
-      <button class="btn btn-secondary" onclick="proceedWithSimulationFromModal()">デモ用データで進める</button>
+      <button class="btn btn-secondary" onclick="closeSimulationModal()">キャンセル</button>
     </div>
   </div>
 </div>
@@ -683,12 +691,11 @@
     <p style="color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; margin-bottom: 24px; text-align: left;">
       Gemini APIキーは有効ですが、この動画ファイル（<strong id="file-missing-name" style="color: var(--accent-cyan);"></strong>）のバイナリデータがブラウザのメモリ内に存在しません。<br><br>
       ※ ブラウザの更新（リロード）、別ブラウザからのアクセス、またはGoogle Drive自動検出のダミーファイルのため、実体ファイルが引き継がれていません。<br><br>
-      このまま実行すると、実際の音声解析は行われず、<strong>デモ用の模擬フィードバックデータ</strong>での進行となります。<br><br>
-      実際のAI音声解析を行うには、まず「録画一覧」タブのドロップエリアに対象のローカルファイル（<strong id="file-missing-name-2" style="color: var(--accent-cyan);"></strong>）をドラッグ＆ドロップして読み込ませてから分析・再分析を行ってください。
+      ファイルが無いまま実行すると<strong>デモ用の模擬データ</strong>しか作れず、それが本物の評価として保存されてしまうため、この状態では分析を実行しません。<br><br>
+      「録画一覧」タブのドロップエリアに対象のローカルファイル（<strong id="file-missing-name-2" style="color: var(--accent-cyan);"></strong>）をドラッグ＆ドロップして読み込ませてから、分析・再分析を行ってください。
     </p>
     <div class="flex gap-12" style="justify-content: center; gap: 12px;">
-      <button class="btn btn-secondary" onclick="closeFileMissingModal()">キャンセル</button>
-      <button class="btn btn-primary" onclick="proceedWithSimulationFromFileMissing()" style="background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: #fff; border: none;">デモデータで実行</button>
+      <button class="btn btn-primary" onclick="closeFileMissingModal()">閉じる</button>
     </div>
   </div>
 </div>
@@ -703,6 +710,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
-<script src="js/app.js?v=2.7.9&t=1788314064"></script>
+<script src="js/app.js?v=2.8.0&t=1788478785"></script>
 </body>
 </html>

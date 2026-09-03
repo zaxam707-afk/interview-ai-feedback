@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.7.9';
+const APP_VERSION = 'v2.8.0';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -361,6 +361,9 @@ const DEMO_VIDEOS = [
   { key: 'ito', name: '伊藤面接官_0416.mp4', date: '2026/04/16', duration: '35分', size: '312 MB', status: 'pending', grade: '—', score: null, isNew: true, hidden: true, group: '伊藤面接官' }
 ];
 const DEMO_VIDEO_KEYS = DEMO_VIDEOS.map(v => v.key);
+// デモ結果を保存してよいのはこの3件だけ。実際にアップロードされた録画
+// （custom_ で始まるキー）にデモ結果を書き込むことは、どの経路でも許さない。
+const PRESET_DEMO_KEYS = ['sato', 'takahashi', 'ito'];
 
 let HISTORY_DATA = [];
 let VIDEOS_DATA = [];
@@ -702,33 +705,17 @@ function showFeedbackPage(key) {
   currentFeedbackKey = key;
   let fb = MOCK_FEEDBACKS[key];
   if (!fb) {
-    // Fallback: If feedback is missing but the video status is done, recreate it dynamically from video info
+    // 以前はここで、評価本体が見つからないときにデモのテンプレートから
+    // 「それらしい評価」を作って保存していた。クラウド同期の遅れや権限エラーで
+    // 一時的に取れなかっただけでも偽の評価が本物として永続化されるため、廃止した。
+    // 見つからないことをそのまま伝え、再分析へ誘導する。
     const video = VIDEOS_DATA.find(v => v.key === key);
+    console.warn(`評価データが見つかりません（key: ${key}）。捏造せずに中断します。`);
     if (video && video.status === 'done') {
-      console.warn(`Feedback details missing for video key: ${key}. Recreating fallback feedback.`);
-      let templateKey = 'tanaka';
-      if (video.grade === 'A') templateKey = 'sato';
-      else if (video.grade === 'B') templateKey = 'takahashi';
-      else if (video.grade === 'D') templateKey = 'suzuki';
-      
-      const template = MOCK_FEEDBACKS[templateKey] || MOCK_FEEDBACKS['tanaka'];
-      if (template) {
-        fb = {
-          ...template,
-          title: video.name || '無題の面接',
-          subtitle: `${video.date || new Date().toLocaleDateString('ja-JP')} ・ ${video.duration || '30分'} ・ ${video.size || '150 MB'}`,
-          total: video.score !== null && video.score !== undefined ? video.score : template.total,
-          grade: video.grade && video.grade !== '—' ? video.grade : template.grade,
-          isMock: true
-        };
-        MOCK_FEEDBACKS[key] = fb;
-        saveStateToLocalStorage();
-      }
+      showToast('⚠️', `「${video.name}」の評価データが見つかりません。同期中の可能性があります。少し待っても出ない場合は再分析してください。`);
+    } else {
+      showToast('⚠️', 'フィードバック詳細データが見つかりません。同期中か、まだ分析されていない可能性があります。');
     }
-  }
-
-  if (!fb) {
-    showToast('⚠️', 'フィードバック詳細データが見つかりません。同期中か、データが保存されていない可能性があります。');
     return;
   }
   
@@ -1444,6 +1431,9 @@ function switchPreviewTab(tabName) {
 function handleFileSelect(file) {
   importedFile = file;
   selectedPresetKey = null;
+  // 前に選んでいた録画のキーが残っていると、この新しいファイルの評価結果が
+  // そちらの録画に書き込まれてしまう。取り込みのたびに必ず捨てる。
+  currentAnalysisVideoKey = '';
   
   const videoSelect = document.getElementById('agent-video-select');
   if (videoSelect) videoSelect.value = "";
@@ -1470,6 +1460,7 @@ function clearImportedFile() {
   if (pipelineRunning) return;
   importedFile = null;
   selectedPresetKey = null;
+  currentAnalysisVideoKey = '';
   
   const fileInput = document.getElementById('agent-file-input');
   const videoSelect = document.getElementById('agent-video-select');
@@ -1496,6 +1487,9 @@ function selectPresetVideo(value) {
   if (pipelineRunning || pipelineCompleted) return;
   selectedPresetKey = value;
   importedFile = null;
+  // 分析対象そのものを切り替える。ここを更新し忘れていたため、
+  // 直前に選んでいた実データの録画に、デモの評価結果が上書き保存されていた。
+  currentAnalysisVideoKey = value;
   
   const fileInput = document.getElementById('agent-file-input');
   const fileInfo = document.getElementById('imported-file-info');
@@ -2277,7 +2271,12 @@ function goToSettingsFromModal() {
   navigateTo('settings');
 }
 
-function proceedWithSimulationFromModal() {
+// 以前ここには「デモ用データで進める」ボタンから呼ばれる
+// proceedWithSimulationFromModal があり、simulationForceProceed を立てて
+// パイプラインを強行していた。その結果、実際の録画の評価がデモ内容に
+// 置き換わって保存される事故が起きたため、経路ごと廃止した。
+// 復活させないこと。
+function closeSimulationModal() {
   const modal = document.getElementById('simulation-confirm-modal');
   if (modal) {
     modal.classList.remove('active');
@@ -2285,8 +2284,6 @@ function proceedWithSimulationFromModal() {
       modal.style.display = 'none';
     }, 250);
   }
-  simulationForceProceed = true;
-  startAgentPipeline();
 }
 
 function closeFileMissingModal() {
@@ -2297,12 +2294,6 @@ function closeFileMissingModal() {
       modal.style.display = 'none';
     }, 250);
   }
-}
-
-function proceedWithSimulationFromFileMissing() {
-  closeFileMissingModal();
-  simulationForceProceed = true;
-  startAgentPipeline();
 }
 
 let pipelineStarting = false;
@@ -2840,6 +2831,26 @@ function finishPipeline() {
     candidateKey = 'custom_' + Date.now();
   }
 
+  // デモ（モック）結果を、実際にアップロードされた録画の評価として保存しない。
+  // 経路がひとつでも漏れると、面接官の実データがデモ内容に置き換わってしまう。
+  // 画面上のプレビューだけ出して、保存はせず録画を未分析に戻す。
+  if (parsedResult && parsedResult.isMock === true && !PRESET_DEMO_KEYS.includes(candidateKey)) {
+    logToConsole('error', '[WARNING] デモ用の模擬データが生成されたため、この録画の評価としては保存しませんでした。実際のファイルを選び直して再分析してください。');
+    showToast('⚠️', 'デモ用の模擬結果のため保存しませんでした。ファイルを選び直して再分析してください。');
+    const target = VIDEOS_DATA.find(v => v.key === candidateKey);
+    if (target && target.status === 'processing') {
+      target.status = 'pending';
+      saveStateToLocalStorage();
+      renderVideosTable();
+    }
+    if (pipelineStatus) {
+      pipelineStatus.textContent = '未保存（デモ結果）';
+      pipelineStatus.className = 'status-badge pending';
+    }
+    updatePreviewsWithResults(candidateKey);
+    return;
+  }
+
   updatePreviewsWithResults(candidateKey);
   integrateResultsIntoApp(candidateKey);
 }
@@ -2879,8 +2890,11 @@ function updatePreviewsWithResults(candidateKey) {
     fileItem.className = 'drive-file-item';
     fileItem.style.animation = 'fadeIn 0.5s ease';
     
-    MOCK_FEEDBACKS[candidateKey] = parsedResult;
-    
+    // モック結果は保存対象にしない（finishPipeline のガードと対で効かせる）
+    if (!(parsedResult.isMock === true && !PRESET_DEMO_KEYS.includes(candidateKey))) {
+      MOCK_FEEDBACKS[candidateKey] = parsedResult;
+    }
+
     const baseTitle = parsedResult.title.replace('.mp4', '').replace('.mp3', '');
     fileItem.innerHTML = `
       <span class="file-icon">📄</span>
@@ -2915,7 +2929,10 @@ function integrateResultsIntoApp(candidateKey) {
   const baseTitle = parsedResult.title.replace('.mp4', '').replace('.mp3', '');
   
   const modelSelect = document.getElementById('settings-model-select');
-  const modelName = modelSelect ? modelSelect.value : 'gemini-3.7-flash';
+  // デモ結果に使用モデルを書くと、一覧で本物の分析と見分けがつかなくなる
+  const modelName = (parsedResult && parsedResult.isMock === true)
+    ? ''
+    : (modelSelect ? modelSelect.value : 'gemini-3.7-flash');
   
   const existingVideo = VIDEOS_DATA.find(v => v.key === candidateKey);
   const groupName = existingVideo ? (existingVideo.group || 'その他') : 'その他';
@@ -3002,6 +3019,7 @@ function resetAgentPipeline() {
   
   importedFile = null;
   selectedPresetKey = null;
+  currentAnalysisVideoKey = '';
   uploadedFileMeta = null;
   parsedResult = null;
   pipelineCompleted = false;
@@ -3179,8 +3197,14 @@ function renderVideosTable() {
   tbody.innerHTML = filteredVideos.map(v => {
     let deleteBtn = `<button class="btn btn-sm" style="background:transparent; border:none; padding:4px 8px; color:var(--accent-red); cursor:pointer; font-size:14px; margin-left:8px;" onclick="deleteVideo('${v.key}')" title="削除">🗑️</button>`;
     
+    const rowFeedback = MOCK_FEEDBACKS[v.key];
+    const isMockRow = !!(rowFeedback && rowFeedback.isMock === true) && !PRESET_DEMO_KEYS.includes(v.key);
+
     if (v.status === 'done') {
-      statusBadge = `<span class="status-badge done">✓ 分析済み</span>`;
+      // デモ結果が実データに紛れても気付けるようにする
+      statusBadge = isMockRow
+        ? `<span class="status-badge pending" title="実際の音声は解析されていません">⚠ デモ結果</span>`
+        : `<span class="status-badge done">✓ 分析済み</span>`;
       scoreBadge = `<span class="grade-badge ${v.grade}">${v.grade}</span>`;
       actionBtn = `<button class="btn btn-sm btn-secondary" onclick="showFeedbackPage('${v.key}')">詳細</button>` +
                   `<button class="btn btn-sm btn-primary" style="margin-left:8px;" onclick="reanalyzeVideo('${v.key}')">再分析</button>` +
@@ -4359,6 +4383,60 @@ async function recoverOrphanedFeedbacks() {
   } catch (err) {
     console.error('[Recovery] Error:', err);
     showToast('❌', `復元中にエラーが発生しました: ${err.message}`);
+  }
+}
+
+// ===== デモ結果になってしまった分析の復旧 =====
+// 過去のバグ（分析対象キーの取り違え、デモ実行の保存）で、実際の録画の評価が
+// デモ内容に置き換わっている場合がある。録画の行は残したまま未分析に戻し、
+// 実ファイルを読み込ませて再分析できる状態にする。
+async function resetMockResults() {
+  const targets = VIDEOS_DATA.filter(v => {
+    if (PRESET_DEMO_KEYS.includes(v.key)) return false;
+    const fb = MOCK_FEEDBACKS[v.key];
+    return !!(fb && fb.isMock === true);
+  });
+
+  if (targets.length === 0) {
+    showToast('ℹ️', 'デモ結果になっている分析は見つかりませんでした。');
+    return;
+  }
+
+  const names = targets.map(v => v.name).join('\n  • ');
+  if (!confirm(`以下の ${targets.length} 件は、実際の音声ではなくデモ用の模擬データが評価として保存されています。\n\n  • ${names}\n\nこれらの評価を削除し、「未分析」に戻します。録画の行そのものは残るので、ファイルを読み込ませて再分析できます。\n\nよろしいですか？`)) {
+    return;
+  }
+
+  showToast('🔧', 'デモ結果を未分析に戻しています...');
+
+  try {
+    for (const v of targets) {
+      delete MOCK_FEEDBACKS[v.key];
+      v.status = 'pending';
+      v.grade = '—';
+      v.score = null;
+      v.model = '';
+      if (firebaseDb) {
+        await firebaseDb.collection("feedbacks").doc(v.key).delete()
+          .catch(e => console.warn('評価の削除に失敗:', e));
+      }
+    }
+
+    HISTORY_DATA = HISTORY_DATA.filter(h => !targets.some(v => v.key === h.key));
+
+    saveStateToLocalStorage();
+    updateGroupDropdowns();
+    renderVideosTable();
+    updateDashboardMetrics();
+    renderHistoryList();
+    if (document.getElementById('trendChart')) initTrendChart();
+    if (document.getElementById('historyChart')) initHistoryChart();
+    if (document.getElementById('gradeDistChart')) initGradeDistChart();
+
+    showToast('✅', `${targets.length} 件を未分析に戻しました。ファイルを読み込ませて再分析してください。`);
+  } catch (err) {
+    console.error('デモ結果の復旧に失敗:', err);
+    showToast('⚠️', `復旧に失敗しました: ${err.message}`);
   }
 }
 
