@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.8.0';
+const APP_VERSION = 'v2.8.1';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -1086,7 +1086,14 @@ function renderHistoryList() {
     const key = video ? video.key : null;
     const click = key ? ` onclick="showFeedbackPage('${key}')"` : '';
     const gradeColors = { A:'var(--accent-green)', B:'var(--accent-blue)', C:'var(--accent-orange)', D:'var(--accent-red)' };
-    return `<div class="history-item"${click}><div class="history-date">${h.date}</div><div class="grade-badge ${h.grade}" style="width:30px;height:30px;font-size:13px;">${h.grade}</div><div class="history-name">${h.name}</div><div class="history-score" style="color:${gradeColors[h.grade]}">${h.score}/15</div></div>`;
+    // 録画一覧と同じ基準でデモ結果に印を付ける。履歴やグラフだけを見ている人にも
+    // 「この点数は実際の面接のものではない」と分かるようにする。
+    const historyFeedback = key ? MOCK_FEEDBACKS[key] : null;
+    const isMockHistory = !!(historyFeedback && historyFeedback.isMock === true) && !PRESET_DEMO_KEYS.includes(key);
+    const mockMark = isMockHistory
+      ? `<span class="status-badge pending" style="background:rgba(239,68,68,0.15);color:var(--accent-red);border-color:rgba(239,68,68,0.4);font-size:10px;margin-left:8px;" title="実際の音声は解析されていません">⚠️ デモ結果</span>`
+      : '';
+    return `<div class="history-item"${click}><div class="history-date">${h.date}</div><div class="grade-badge ${h.grade}" style="width:30px;height:30px;font-size:13px;">${h.grade}</div><div class="history-name">${h.name}${mockMark}</div><div class="history-score" style="color:${gradeColors[h.grade]}">${h.score}/15</div></div>`;
   }).join('');
 }
 
@@ -3190,7 +3197,7 @@ function renderVideosTable() {
   });
   
   if (filteredVideos.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 30px;">該当する動画はありません</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 30px;">該当する動画はありません</td></tr>`;
     return;
   }
   
@@ -3200,11 +3207,25 @@ function renderVideosTable() {
     const rowFeedback = MOCK_FEEDBACKS[v.key];
     const isMockRow = !!(rowFeedback && rowFeedback.isMock === true) && !PRESET_DEMO_KEYS.includes(v.key);
 
+    // 「種別」列。ステータス（進行状況）とは別に、中身が実際の音声解析なのか
+    // デモ用の模擬データなのかを必ず1行ごとに示す。ここが空白だと、過去に起きた
+    // 「デモ結果が実データとして紛れ込む」事故に誰も気付けない。
+    let kindBadge = `<span style="color:var(--text-muted)">—</span>`;
+    if (PRESET_DEMO_KEYS.includes(v.key)) {
+      kindBadge = `<span class="status-badge pending" title="最初から入っているデモ用のサンプル録画です">🧪 デモ用</span>`;
+    } else if (v.status === 'done') {
+      if (isMockRow) {
+        kindBadge = `<span class="status-badge pending" style="background:rgba(239,68,68,0.15);color:var(--accent-red);border-color:rgba(239,68,68,0.4);" title="実際の音声は解析されていません。デモ用の模擬データが評価として保存されています">⚠️ デモ結果</span>`;
+      } else if (rowFeedback) {
+        const modelNote = v.model ? `<div class="file-meta" style="margin-top:4px;">${v.model}</div>` : '';
+        kindBadge = `<span class="status-badge done" title="実際の音声をAIが解析した結果です">✅ 実分析</span>${modelNote}`;
+      } else {
+        kindBadge = `<span class="status-badge pending" title="評価データがまだ手元にありません。クラウド同期中の可能性があります">❔ 未取得</span>`;
+      }
+    }
+
     if (v.status === 'done') {
-      // デモ結果が実データに紛れても気付けるようにする
-      statusBadge = isMockRow
-        ? `<span class="status-badge pending" title="実際の音声は解析されていません">⚠ デモ結果</span>`
-        : `<span class="status-badge done">✓ 分析済み</span>`;
+      statusBadge = `<span class="status-badge done">✓ 分析済み</span>`;
       scoreBadge = `<span class="grade-badge ${v.grade}">${v.grade}</span>`;
       actionBtn = `<button class="btn btn-sm btn-secondary" onclick="showFeedbackPage('${v.key}')">詳細</button>` +
                   `<button class="btn btn-sm btn-primary" style="margin-left:8px;" onclick="reanalyzeVideo('${v.key}')">再分析</button>` +
@@ -3236,6 +3257,7 @@ function renderVideosTable() {
         <td>${v.duration}</td>
         <td>${v.size}</td>
         <td>${statusBadge}</td>
+        <td>${kindBadge}</td>
         <td>${scoreBadge}</td>
         <td>${actionBtn}</td>
       </tr>
