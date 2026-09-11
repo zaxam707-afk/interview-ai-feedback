@@ -47,7 +47,7 @@
 
     <div class="sidebar-footer">
       <!-- デプロイのたびに更新する。js/app.js?v= と必ず揃えること（画面から新旧を判別するため） -->
-      <div class="version">v2.8.1 Demo ・ Powered by Gemini AI (⚡ Pipeline Turbo)</div>
+      <div class="version">v2.8.2 Demo ・ Powered by Gemini AI (⚡ Pipeline Turbo)</div>
     </div>
   </nav>
 
@@ -676,6 +676,7 @@
       社内プロキシ・VPN や、広告ブロッカーなどの拡張機能が通信を止めている可能性があります。まず<strong>ページを再読み込み</strong>してから、もう一度お試しください。<br><br>
       APIキーが無い状態では実際の音声解析はできません。デモ用の模擬データが本物の評価として保存されるのを防ぐため、この状態では分析を実行しません。
     </p>
+    <p id="shared-key-error-detail" style="color: var(--text-muted, #8a8fa3); font-size: 11.5px; margin: -12px 0 20px; text-align: left; word-break: break-all;"></p>
     <div class="flex gap-12" style="justify-content: center; gap: 12px; flex-wrap: wrap;">
       <button class="btn btn-primary" onclick="location.reload()">🔄 再読み込み</button>
       <button class="btn btn-secondary admin-only" onclick="goToSettingsFromModal()">⚙️ 設定画面へ</button>
@@ -711,6 +712,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 
-<script src="js/app.js?v=2.8.1&t=1788479342"></script>
+<script src="js/app.js?v=2.8.2&t=1789120000"></script>
 </body>
 </html>

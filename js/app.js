@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.8.1';
+const APP_VERSION = 'v2.8.2';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -403,20 +403,33 @@ function getFirebaseConfig() {
 // そこで、ふつうの HTTPS GET 1回で済む REST でも並行して取りに行き、
 // 取れたら localStorage に控える。次回以降は起動直後から共有キーが使える。
 // この控えを消すと、初回表示のたびに通信待ちが発生する。
+//
+// 【注意】共有キーを消してよいのは「サーバが文書は無いと答えたとき」だけ。
+// Firestore SDK は常時接続が張れないと約10秒でオフライン扱いになり、
+// キャッシュに無い文書を「存在しない（fromCache: true）」として onSnapshot に流してくる。
+// v2.8.1 まではこれを共有解除と取り違えて、REST で取れていたキーを消していた。
+// そのため常時接続を塞がれた環境（広告ブロッカー・社内プロキシ等）では、
+// 開いて10秒以上たってから分析を押すと必ず「共有APIキーを読み込めませんでした」が出た。
 let sharedApiKeyPromise = null;
+let lastSharedKeyError = '';
 
-function loadSharedApiKeyViaRest() {
-  if (sharedApiKeyPromise) return sharedApiKeyPromise;
+function setSharedApiKey(key) {
+  if (!key) return;
+  SHARED_API_KEY = key;
+  try { localStorage.setItem('shared_gemini_api_key', key); } catch (e) {}
+}
 
-  // 前回の控えがあれば、通信の結果を待たずに即使えるようにしておく
-  const cached = localStorage.getItem('shared_gemini_api_key');
-  if (cached && !SHARED_API_KEY) SHARED_API_KEY = cached;
+function clearSharedApiKey() {
+  SHARED_API_KEY = '';
+  try { localStorage.removeItem('shared_gemini_api_key'); } catch (e) {}
+}
 
+function fetchSharedApiKeyViaRest() {
   const config = getFirebaseConfig();
   const url = `https://firestore.googleapis.com/v1/projects/${config.projectId}`
             + `/databases/(default)/documents/shared_settings/gemini?key=${config.apiKey}`;
 
-  sharedApiKeyPromise = fetch(url)
+  return fetch(url, { cache: 'no-store' })
     .then(res => {
       // 404 は「共有が解除された」。通信エラーと区別して控えを消す
       if (res.status === 404) return { __missing: true };
@@ -425,35 +438,71 @@ function loadSharedApiKeyViaRest() {
     })
     .then(json => {
       if (json && json.__missing) {
-        SHARED_API_KEY = '';
-        localStorage.removeItem('shared_gemini_api_key');
+        clearSharedApiKey();
+        lastSharedKeyError = 'サーバ上に共有キーが登録されていません（管理者が共有を解除した可能性）';
         return '';
       }
       const key = json && json.fields && json.fields.apiKey && json.fields.apiKey.stringValue;
       if (key) {
-        SHARED_API_KEY = key;
-        localStorage.setItem('shared_gemini_api_key', key);
+        setSharedApiKey(key);
+        lastSharedKeyError = '';
+      } else {
+        lastSharedKeyError = '共有キーの文書はありますが、キーが空です';
       }
       return SHARED_API_KEY;
-    })
+    });
+}
+
+// 起動時と分析開始時に呼ぶ。force=true なら前回の結果を使い回さず取り直す。
+function loadSharedApiKeyViaRest(force = false) {
+  if (sharedApiKeyPromise && !force) return sharedApiKeyPromise;
+
+  // 前回の控えがあれば、通信の結果を待たずに即使えるようにしておく
+  try {
+    const cached = localStorage.getItem('shared_gemini_api_key');
+    if (cached && !SHARED_API_KEY) SHARED_API_KEY = cached;
+  } catch (e) {}
+
+  const attempt = () => fetchSharedApiKeyViaRest();
+  const promise = attempt()
+    // 一時的な通信失敗で諦めないよう、1回だけ間を空けて取り直す
+    .catch(() => new Promise(resolve => setTimeout(resolve, 1200)).then(attempt))
     .catch(err => {
       // 取れなくても控えがあればそれで動く。ここで例外を投げると分析が止まる
+      lastSharedKeyError = `通信エラー: ${err && err.message ? err.message : err}`;
       console.warn('共有APIキーの取得に失敗しました:', err);
       return SHARED_API_KEY;
     })
     .then(key => {
       // 取れなかったときは記憶を捨てて、次に呼ばれたらもう一度取りに行けるようにする
-      if (!key) sharedApiKeyPromise = null;
+      if (!key && sharedApiKeyPromise === promise) sharedApiKeyPromise = null;
       try { updateApiKeyStatus(); } catch (e) {}
       return key;
     });
 
-  return sharedApiKeyPromise;
+  sharedApiKeyPromise = promise;
+  return promise;
+}
+
+// REST とは別の経路（Firestore SDK の単発取得）でも取りに行く。
+// どちらか片方が塞がれている環境でも、もう片方で取れれば分析できる。
+function fetchSharedApiKeyViaSdk() {
+  if (!firebaseDb) return Promise.resolve('');
+  return firebaseDb.collection('shared_settings').doc('gemini').get({ source: 'server' })
+    .then(doc => {
+      const key = doc.exists && doc.data() ? doc.data().apiKey : '';
+      if (key) setSharedApiKey(key);
+      return key || '';
+    })
+    .catch(err => {
+      console.warn('共有APIキーの取得（SDK）に失敗しました:', err);
+      return '';
+    });
 }
 
 // 分析開始時に使うキーを決める。
 // 端末に自分のキーがあればそれ、無ければ共有キー。共有キーがまだ届いていない
-// だけの可能性があるので、「無い」と判断する前に一度だけ取得を待つ。
+// だけの可能性があるので、「無い」と判断する前に REST と SDK の両方で取り直しを待つ。
 async function resolveApiKey() {
   const input = document.getElementById('settings-api-key');
   const localKey = input ? input.value.trim() : '';
@@ -461,10 +510,22 @@ async function resolveApiKey() {
   if (SHARED_API_KEY) return SHARED_API_KEY;
 
   showToast('🔑', '共有APIキーを確認しています...');
+  const firstNonEmpty = new Promise(resolve => {
+    let pending = 2;
+    const done = key => {
+      if (key) resolve(key);
+      else if (--pending === 0) resolve('');
+    };
+    loadSharedApiKeyViaRest(true).then(done, () => done(''));
+    fetchSharedApiKeyViaSdk().then(done, () => done(''));
+  });
   await Promise.race([
-    loadSharedApiKeyViaRest(),
-    new Promise(resolve => setTimeout(resolve, 8000))
+    firstNonEmpty,
+    new Promise(resolve => setTimeout(resolve, 10000))
   ]);
+  if (!SHARED_API_KEY && !lastSharedKeyError) {
+    lastSharedKeyError = '10秒以内に応答がありませんでした';
+  }
   return SHARED_API_KEY || '';
 }
 
@@ -651,9 +712,8 @@ function setupFirestoreRealtimeSync() {
     if (doc.exists) {
       const data = doc.data();
       if (data.apiKey) {
-        SHARED_API_KEY = data.apiKey;
-        localStorage.setItem('shared_gemini_api_key', data.apiKey);
-        
+        setSharedApiKey(data.apiKey);
+
         // Update checkbox state on this device
         const shareCheckbox = document.getElementById('settings-share-api-key');
         if (shareCheckbox) {
@@ -661,10 +721,11 @@ function setupFirestoreRealtimeSync() {
           shareCheckbox.checked = (localKey === SHARED_API_KEY);
         }
       }
-    } else {
-      // 共有が解除されている。控えも消す
-      SHARED_API_KEY = '';
-      localStorage.removeItem('shared_gemini_api_key');
+    } else if (!doc.metadata.fromCache) {
+      // サーバが「文書は無い」と答えた＝共有が解除されている。控えも消す。
+      // fromCache のときは「オフラインで分からない」だけなので、絶対に消さないこと
+      // （これを消していたのが「共有APIキーを読み込めませんでした」の原因）。
+      clearSharedApiKey();
       const shareCheckbox = document.getElementById('settings-share-api-key');
       if (shareCheckbox) shareCheckbox.checked = false;
     }
@@ -2325,6 +2386,9 @@ async function startAgentPipeline() {
   // Check if trying to run a custom file without an API key
   if (importedFile && !apiKey && !simulationForceProceed) {
     const modal = document.getElementById('simulation-confirm-modal');
+    // 原因の切り分け用。問い合わせのときにこの1行を教えてもらえば見当がつく
+    const detailEl = document.getElementById('shared-key-error-detail');
+    if (detailEl) detailEl.textContent = `詳細: ${lastSharedKeyError || '不明'}（${APP_VERSION}）`;
     if (modal) {
       modal.style.display = 'flex';
       setTimeout(() => {
