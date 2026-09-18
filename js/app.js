@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.8.2';
+const APP_VERSION = 'v2.8.3';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -546,38 +546,406 @@ function notifyCloudSaveFailed(err) {
   showToast('⚠️', `クラウドに保存できませんでした（${err.code || err.message}）。この端末には残っています。`);
 }
 
-function saveStateToLocalStorage() {
+// ===== クラウド同期（REST） =====
+// Firestore SDK の onSnapshot / set() は常時接続（WebChannel の Listen / Write チャネル）に依存する。
+// これが塞がれる・404 で落ち続ける環境では、SDK はエラーも出さずに
+//   ・クラウドの変更を1件も受け取らない（画面は手元の古い控えのまま）
+//   ・保存を端末内に溜め込むだけでクラウドに送らない
+// 状態になる（2026-09-18、管理者の端末で Listen/channel が 404 を返し続け、
+// 他の人の分析結果も、クラウド側で直した面接官欄も一切反映されなかった）。
+// そこで読み書きの本線を、ふつうの HTTPS 1往復で済む REST に置き換える。
+// SDK の購読は「繋がる環境なら即時に反映される」おまけとして残す。
+//
+// 【保存は差分だけ】以前は保存のたびに端末内の全録画をクラウドへ丸ごと set() していた。
+// 古い控えを持った端末で何か1つ操作すると、他の人の修正（面接官欄など）が巻き戻り、
+// 削除された録画が復活していた。クラウドの内容（lastCloudJson）と違う行だけを送ること。
+//
+// 【クラウドを読むまでは書かない】起動直後の手元の控えは古い可能性がある。
+// 一度もクラウドを読めていない状態で送ると、上と同じ巻き戻しが起きる。
+const CLOUD_POLL_INTERVAL_MS = 30000;
+let cloudReady = false;              // クラウドの内容を一度でも読めたか
+let restLoadedOnce = false;          // REST で評価まで全件読み込んだか（以降は差分だけ取り直す）
+let cloudPollTimer = null;
+let cloudPullRunning = false;
+const lastCloudJson = {};            // 'videos/<key>' → クラウド上の内容（正規化済み JSON）
+const videoUpdateTimes = {};         // 録画キー → クラウドの updateTime（評価の取り直し判定に使う）
+const cloudWriteQueue = {};          // path → 次に送る内容（同じ行は最新だけ送る）
+const cloudWriteRunning = {};        // path → 送信中か
+const pendingCloudPaths = new Set(); // 送信待ち・送信中の path（取り込みで上書きしない）
+
+function firestoreRestBase() {
+  const config = getFirebaseConfig();
+  return `https://firestore.googleapis.com/v1/projects/${config.projectId}/databases/(default)/documents`;
+}
+
+function firestoreRestKeyParam() {
+  return `key=${encodeURIComponent(getFirebaseConfig().apiKey)}`;
+}
+
+function toFirestoreValue(v) {
+  if (v === null || v === undefined) return { nullValue: null };
+  if (typeof v === 'boolean') return { booleanValue: v };
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v)) return { nullValue: null };
+    return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  }
+  if (typeof v === 'string') return { stringValue: v };
+  if (Array.isArray(v)) {
+    return { arrayValue: { values: v.filter(x => x !== undefined && typeof x !== 'function').map(toFirestoreValue) } };
+  }
+  if (typeof v === 'object') return { mapValue: { fields: toFirestoreFields(v) } };
+  return { stringValue: String(v) };
+}
+
+function toFirestoreFields(obj) {
+  const fields = {};
+  for (const k in obj) {
+    if (obj[k] === undefined || typeof obj[k] === 'function') continue;
+    fields[k] = toFirestoreValue(obj[k]);
+  }
+  return fields;
+}
+
+function fromFirestoreValue(v) {
+  if (!v || typeof v !== 'object') return null;
+  if ('nullValue' in v) return null;
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('integerValue' in v) return Number(v.integerValue);
+  if ('doubleValue' in v) return Number(v.doubleValue);
+  if ('stringValue' in v) return v.stringValue;
+  if ('timestampValue' in v) return v.timestampValue;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fromFirestoreValue);
+  if ('mapValue' in v) return fromFirestoreFields(v.mapValue.fields || {});
+  return null;
+}
+
+function fromFirestoreFields(fields) {
+  const obj = {};
+  for (const k in fields) obj[k] = fromFirestoreValue(fields[k]);
+  return obj;
+}
+
+// キーの並び順に左右されない JSON。手元とクラウドが同じ内容かの比較に使う
+function stableStringify(v) {
+  if (v === undefined || typeof v === 'function') return 'null';
+  if (typeof v === 'number' && !Number.isFinite(v)) return 'null';
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+  return '{' + Object.keys(v)
+    .filter(k => v[k] !== undefined && typeof v[k] !== 'function')
+    .sort()
+    .map(k => JSON.stringify(k) + ':' + stableStringify(v[k]))
+    .join(',') + '}';
+}
+
+async function restListCollection(collection) {
+  const docs = [];
+  let pageToken = '';
+  do {
+    const url = `${firestoreRestBase()}/${collection}?pageSize=300&${firestoreRestKeyParam()}`
+              + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`${collection} の取得に失敗 (HTTP ${res.status})`);
+    const json = await res.json();
+    (json.documents || []).forEach(d => {
+      docs.push({ id: d.name.split('/').pop(), updateTime: d.updateTime, data: fromFirestoreFields(d.fields || {}) });
+    });
+    pageToken = json.nextPageToken || '';
+  } while (pageToken);
+  return docs;
+}
+
+async function restGetDoc(collection, id) {
+  const url = `${firestoreRestBase()}/${collection}/${encodeURIComponent(id)}?${firestoreRestKeyParam()}`;
+  const res = await fetch(url, { cache: 'no-store' });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${collection}/${id} の取得に失敗 (HTTP ${res.status})`);
+  const json = await res.json();
+  return fromFirestoreFields(json.fields || {});
+}
+
+// SDK の set() と同じく、文書を丸ごと置き換える（updateMask を付けない PATCH）
+async function restSetDoc(collection, id, data) {
+  const url = `${firestoreRestBase()}/${collection}/${encodeURIComponent(id)}?${firestoreRestKeyParam()}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ fields: toFirestoreFields(data) })
+  });
+  if (!res.ok) {
+    const err = new Error(`${collection}/${id} の保存に失敗 (HTTP ${res.status})`);
+    err.code = `HTTP ${res.status}`;
+    throw err;
+  }
+}
+
+async function restDeleteDoc(collection, id) {
+  const url = `${firestoreRestBase()}/${collection}/${encodeURIComponent(id)}?${firestoreRestKeyParam()}`;
+  const res = await fetch(url, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) throw new Error(`${collection}/${id} の削除に失敗 (HTTP ${res.status})`);
+}
+
+function queueCloudWrite(collection, id, data) {
+  if (!firebaseDb || !id) return;
+  const path = `${collection}/${id}`;
+  const json = stableStringify(data);
+  if (!cloudWriteRunning[path] && !cloudWriteQueue[path] && lastCloudJson[path] === json) return;
+  if (cloudWriteQueue[path] && cloudWriteQueue[path].json === json) return;
+  // 送る時点の内容で固定する（送信待ちの間に画面側のオブジェクトが書き換わっても混ざらないように）
+  cloudWriteQueue[path] = { collection, id, data: JSON.parse(JSON.stringify(data)), json };
+  pendingCloudPaths.add(path);
+  if (!cloudWriteRunning[path]) runCloudWrite(path);
+}
+
+// 同じ行への書き込みは1本ずつ順に送る。並行に送ると古い内容が後から届いて勝つことがある
+async function runCloudWrite(path) {
+  cloudWriteRunning[path] = true;
+  try {
+    while (cloudWriteQueue[path]) {
+      const job = cloudWriteQueue[path];
+      delete cloudWriteQueue[path];
+      if (lastCloudJson[path] === job.json) continue;
+      try {
+        await restSetDoc(job.collection, job.id, job.data);
+        lastCloudJson[path] = job.json;
+      } catch (err) {
+        console.error('クラウド保存に失敗しました:', path, err);
+        notifyCloudSaveFailed(err);
+      }
+    }
+  } finally {
+    cloudWriteRunning[path] = false;
+    pendingCloudPaths.delete(path);
+  }
+}
+
+function deleteCloudDoc(collection, id) {
+  if (!firebaseDb || !id) return Promise.resolve();
+  const path = `${collection}/${id}`;
+  delete cloudWriteQueue[path];
+  return restDeleteDoc(collection, id)
+    .then(() => { delete lastCloudJson[path]; })
+    .catch(err => {
+      console.error('クラウドからの削除に失敗しました:', path, err);
+      notifyCloudSaveFailed(err);
+    });
+}
+
+function setCloudSyncBadge(state) {
+  const badge = document.getElementById('global-sync-badge');
+  const firebaseStatus = document.getElementById('firebase-status');
+  const views = {
+    checking: ['🟡 クラウド確認中…', 'pending', '接続確認中'],
+    ok:       ['🟢 クラウド同期中', 'done', '接続完了（クラウド同期中）'],
+    offline:  ['🔴 クラウドに接続できません（この端末の控えを表示中）', 'pending', '接続エラー（この端末の控えを表示中）']
+  };
+  const [text, cls, statusText] = views[state] || views.checking;
+  if (badge) {
+    badge.textContent = text;
+    badge.className = `status-badge ${cls}`;
+  }
+  if (firebaseStatus) {
+    firebaseStatus.textContent = statusText;
+    firebaseStatus.className = `status-badge ${cls}`;
+  }
+}
+
+// クラウドから取り込んだ録画一覧を画面に反映する（REST・SDK 共通の合流点）
+function applyCloudVideos(loadedVideos) {
+  // 自分が送信中の行は、手元の内容を正とする（送る前の古い内容に戻さない）
+  loadedVideos = loadedVideos.map(lv => {
+    const local = VIDEOS_DATA.find(v => v.key === lv.key);
+    return (local && pendingCloudPaths.has(`videos/${lv.key}`)) ? local : lv;
+  });
+  VIDEOS_DATA.forEach(v => {
+    if (pendingCloudPaths.has(`videos/${v.key}`) && !loadedVideos.some(lv => lv.key === v.key)) {
+      loadedVideos.push(v);
+    }
+  });
+
+  if (loadedVideos.length > 0) {
+    // Preserve local fileObjects and prevent status regression
+    loadedVideos.forEach(lv => {
+      const existing = VIDEOS_DATA.find(v => v.key === lv.key);
+      if (existing && existing !== lv) {
+        // Preserve local fileObjects in memory (only if they are valid File instances)
+        if (existing.fileObject && existing.fileObject instanceof File) {
+          lv.fileObject = existing.fileObject;
+        }
+        // Prevent Firestore snapshot from regressing a locally-completed 'done'
+        // back to 'processing'. This happens when the 'processing' write reaches
+        // Firestore first, triggers an onSnapshot, and the 'done' write hasn't
+        // arrived yet.
+        if (existing.status === 'done' && lv.status === 'processing') {
+          lv.status = existing.status;
+          lv.grade = existing.grade;
+          lv.score = existing.score;
+          lv.model = existing.model;
+        }
+      }
+    });
+
+    const presetsToAppend = DEMO_VIDEOS.filter(p => !loadedVideos.some(lv => lv.key === p.key));
+    VIDEOS_DATA = [...loadedVideos, ...presetsToAppend];
+  } else {
+    // Firestore が0件でも、手元にあるデータは絶対に捨てない。
+    //
+    // 以前はここで無条件にデモ3件へ置き換えていた。そのため
+    // 権限エラーや読み込み遅延で一瞬でも 0 件を受け取ると、
+    // localStorage から復元した実データが画面から消えていた。
+    // さらにその状態で何か保存操作をすると、空になった VIDEOS_DATA で
+    // localStorage まで上書きされ、控えごと失われる。
+    // 「分析履歴がすべて消えた」の原因はこれ。
+    const hasRealData = VIDEOS_DATA.some(v => !DEMO_VIDEO_KEYS.includes(v.key));
+    if (hasRealData) {
+      console.warn('Firestore の videos が0件でしたが、手元のデータを保持します。');
+    } else {
+      VIDEOS_DATA = [...DEMO_VIDEOS];
+    }
+  }
+
+  // Rebuild HISTORY_DATA (safeguarding missing properties)
+  HISTORY_DATA = VIDEOS_DATA.filter(v => v.status === 'done').map(v => ({
+    key: v.key,
+    date: v.date || new Date().toLocaleDateString('ja-JP'),
+    name: (v.name ? extractCandidateName(v.name) : '不明な候補者') + '面接官',
+    score: v.score || 0,
+    grade: v.grade || 'C',
+    group: v.group || 'その他'
+  }));
+
+  HISTORY_DATA.sort((a, b) => {
+    const dateA = new Date(a.date);
+    const dateB = new Date(b.date);
+    return (isNaN(dateB) ? 0 : dateB) - (isNaN(dateA) ? 0 : dateA);
+  });
+
+  // 次回の起動時に古い控えから始まらないよう、取り込んだ内容を端末にも残す
+  persistStateLocally();
+
+  // Re-render UI components dynamically
+  updateGroupDropdowns();
+  if (document.getElementById('trendChart')) initTrendChart();
+  if (document.getElementById('historyChart')) initHistoryChart();
+  if (document.getElementById('gradeDistChart')) initGradeDistChart();
+  renderHistoryList();
+  renderInterviewerTendencies();
+  renderVideosTable();
+  updateDashboardMetrics();
+  updateApiCostTracker();
+}
+
+function applyCloudFeedbacks(loadedFeedbacks) {
+  for (const k in loadedFeedbacks) {
+    if (pendingCloudPaths.has(`feedbacks/${k}`)) delete loadedFeedbacks[k];
+  }
+  Object.assign(MOCK_FEEDBACKS, loadedFeedbacks);
+  updateApiCostTracker();
+}
+
+// REST でクラウドの内容を読み込む。初回は評価も全件、以降は更新された録画の評価だけ取り直す
+async function pullFromCloudViaRest() {
+  if (!firebaseDb || cloudPullRunning) return;
+  cloudPullRunning = true;
+  try {
+    const firstLoad = !restLoadedOnce;
+    const videoDocs = await restListCollection('videos');
+
+    const loadedFeedbacks = {};
+    if (firstLoad) {
+      const feedbackDocs = await restListCollection('feedbacks');
+      feedbackDocs.forEach(d => { loadedFeedbacks[d.id] = d.data; });
+    } else {
+      const changed = videoDocs.filter(d => videoUpdateTimes[d.id] !== d.updateTime && d.data.status === 'done');
+      await Promise.all(changed.map(d => restGetDoc('feedbacks', d.id)
+        .then(fb => { if (fb) loadedFeedbacks[d.id] = fb; })
+        .catch(err => console.warn('評価の取得に失敗しました:', d.id, err))));
+    }
+
+    // 変化が無ければ画面を描き直さない（30秒ごとのチャートのちらつき防止）
+    let changedAnything = firstLoad || Object.keys(loadedFeedbacks).length > 0;
+    const seen = new Set();
+    videoDocs.forEach(d => {
+      seen.add(d.id);
+      if (videoUpdateTimes[d.id] !== d.updateTime) changedAnything = true;
+      videoUpdateTimes[d.id] = d.updateTime;
+      lastCloudJson[`videos/${d.id}`] = stableStringify(d.data);
+    });
+    Object.keys(videoUpdateTimes).forEach(id => {
+      if (!seen.has(id)) {
+        delete videoUpdateTimes[id];
+        delete lastCloudJson[`videos/${id}`];
+        changedAnything = true;
+      }
+    });
+    for (const k in loadedFeedbacks) lastCloudJson[`feedbacks/${k}`] = stableStringify(loadedFeedbacks[k]);
+
+    cloudReady = true;
+    restLoadedOnce = true;
+    setCloudSyncBadge('ok');
+    if (changedAnything) {
+      applyCloudFeedbacks(loadedFeedbacks);
+      applyCloudVideos(videoDocs.map(d => ({ ...d.data, key: d.data.key || d.id })));
+    }
+  } catch (err) {
+    console.error('クラウドからの読み込みに失敗しました:', err);
+    setCloudSyncBadge('offline');
+  } finally {
+    cloudPullRunning = false;
+  }
+}
+
+function startCloudPolling() {
+  pullFromCloudViaRest();
+  if (cloudPollTimer) clearInterval(cloudPollTimer);
+  cloudPollTimer = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    pullFromCloudViaRest();
+  }, CLOUD_POLL_INTERVAL_MS);
+  // 別タブから戻ってきたときは待たずに取り直す
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') pullFromCloudViaRest();
+  });
+}
+
+function collectCustomFeedbacks() {
+  const customFeedbacks = {};
+  for (const k in MOCK_FEEDBACKS) {
+    if (MOCK_FEEDBACKS[k] && k.startsWith('custom_')) {
+      customFeedbacks[k] = MOCK_FEEDBACKS[k];
+    }
+  }
+  return customFeedbacks;
+}
+
+function persistStateLocally() {
   try {
     localStorage.setItem('interview_history_data', JSON.stringify(HISTORY_DATA));
     localStorage.setItem('interview_videos_data', JSON.stringify(VIDEOS_DATA));
-    // Save only custom feedbacks (that were added dynamically by user and start with custom_)
-    const customFeedbacks = {};
-    for (const k in MOCK_FEEDBACKS) {
-      if (MOCK_FEEDBACKS[k] && k.startsWith('custom_')) {
-        customFeedbacks[k] = MOCK_FEEDBACKS[k];
-      }
-    }
-    localStorage.setItem('interview_custom_feedbacks', JSON.stringify(customFeedbacks));
+    localStorage.setItem('interview_custom_feedbacks', JSON.stringify(collectCustomFeedbacks()));
+  } catch (e) {
+    console.error('端末への保存に失敗しました:', e);
+  }
+}
+
+function saveStateToLocalStorage() {
+  try {
+    persistStateLocally();
 
     if (firebaseDb) {
-      // Save videos to collection "videos"
-      VIDEOS_DATA.forEach(v => {
-        const docData = { ...v };
-        delete docData.fileObject;
-        firebaseDb.collection("videos").doc(v.key).set(docData)
-          .catch(err => {
-            console.error("Error saving video doc:", err);
-            notifyCloudSaveFailed(err);
-          });
-      });
-      // Save custom feedbacks to collection "feedbacks"
-      for (const k in customFeedbacks) {
-        if (customFeedbacks[k]) {
-          firebaseDb.collection("feedbacks").doc(k).set(customFeedbacks[k])
-            .catch(err => {
-              console.error("Error saving feedback doc:", err);
-              notifyCloudSaveFailed(err);
-            });
+      if (!cloudReady) {
+        // 古い控えでクラウドを上書きしないよう、クラウドを一度読むまでは送らない
+        console.warn('クラウドの内容をまだ読み込めていないため、クラウドへの保存を見送りました（端末には保存済み）。');
+      } else {
+        VIDEOS_DATA.forEach(v => {
+          if (!v || !v.key) return;
+          const docData = { ...v };
+          delete docData.fileObject;
+          queueCloudWrite('videos', v.key, docData);
+        });
+        const customFeedbacks = collectCustomFeedbacks();
+        for (const k in customFeedbacks) {
+          queueCloudWrite('feedbacks', k, customFeedbacks[k]);
         }
       }
     }
@@ -589,122 +957,50 @@ function saveStateToLocalStorage() {
 
 function setupFirestoreRealtimeSync() {
   if (!firebaseDb) return;
-  
-  const firebaseStatus = document.getElementById('firebase-status');
-  const globalSyncBadge = document.getElementById('global-sync-badge');
-  
-  if (firebaseStatus) {
-    firebaseStatus.textContent = '接続完了（クラウド同期中）';
-    firebaseStatus.className = 'status-badge done';
-  }
-  if (globalSyncBadge) {
-    globalSyncBadge.textContent = '🟢 クラウド同期中';
-    globalSyncBadge.className = 'status-badge done';
-  }
-  
-  // Real-time listener for videos
+
+  // 🟢 は実際にクラウドを読めてから出す（以前は接続確認前に 🟢 を出していたため、
+  // 受信できていない端末でも正常に見えていた）
+  setCloudSyncBadge('checking');
+
+  // 本線は REST（起動時＋30秒ごと）。常時接続が使えない環境でもこれで同期できる
+  startCloudPolling();
+
+  // SDK の購読は、繋がる環境で即時に反映するためのおまけ。
+  // fromCache（サーバから届いていない）のスナップショットは中身が不完全なので使わない。
   firebaseDb.collection("videos").onSnapshot(snapshot => {
     try {
-      let loadedVideos = [];
+      if (snapshot.metadata.fromCache) return;
+      const loadedVideos = [];
       snapshot.forEach(doc => {
-        loadedVideos.push(doc.data());
+        const data = doc.data();
+        loadedVideos.push({ ...data, key: data.key || doc.id });
+        lastCloudJson[`videos/${doc.id}`] = stableStringify(data);
       });
-      
-      if (loadedVideos.length > 0) {
-        // Preserve local fileObjects and prevent status regression
-        loadedVideos.forEach(lv => {
-          const existing = VIDEOS_DATA.find(v => v.key === lv.key);
-          if (existing) {
-            // Preserve local fileObjects in memory (only if they are valid File instances)
-            if (existing.fileObject && existing.fileObject instanceof File) {
-              lv.fileObject = existing.fileObject;
-            }
-            // Prevent Firestore snapshot from regressing a locally-completed 'done'
-            // back to 'processing'. This happens when the 'processing' write reaches
-            // Firestore first, triggers an onSnapshot, and the 'done' write hasn't
-            // arrived yet.
-            if (existing.status === 'done' && lv.status === 'processing') {
-              lv.status = existing.status;
-              lv.grade = existing.grade;
-              lv.score = existing.score;
-              lv.model = existing.model;
-            }
-          }
-        });
-
-        const presetsToAppend = DEMO_VIDEOS.filter(p => !loadedVideos.some(lv => lv.key === p.key));
-        VIDEOS_DATA = [...loadedVideos, ...presetsToAppend];
-      } else {
-        // Firestore が0件でも、手元にあるデータは絶対に捨てない。
-        //
-        // 以前はここで無条件にデモ3件へ置き換えていた。そのため
-        // 権限エラーや読み込み遅延で一瞬でも 0 件を受け取ると、
-        // localStorage から復元した実データが画面から消えていた。
-        // さらにその状態で何か保存操作をすると、空になった VIDEOS_DATA で
-        // localStorage まで上書きされ、控えごと失われる。
-        // 「分析履歴がすべて消えた」の原因はこれ。
-        const hasRealData = VIDEOS_DATA.some(v => !DEMO_VIDEO_KEYS.includes(v.key));
-        if (hasRealData) {
-          console.warn('Firestore の videos が0件でしたが、手元のデータを保持します。');
-        } else {
-          VIDEOS_DATA = [...DEMO_VIDEOS];
-        }
-      }
-      
-      // Rebuild HISTORY_DATA (safeguarding missing properties)
-      HISTORY_DATA = VIDEOS_DATA.filter(v => v.status === 'done').map(v => ({
-        key: v.key,
-        date: v.date || new Date().toLocaleDateString('ja-JP'),
-        name: (v.name ? extractCandidateName(v.name) : '不明な候補者') + '面接官',
-        score: v.score || 0,
-        grade: v.grade || 'C',
-        group: v.group || 'その他'
-      }));
-      
-      HISTORY_DATA.sort((a, b) => {
-        const dateA = new Date(a.date);
-        const dateB = new Date(b.date);
-        return (isNaN(dateB) ? 0 : dateB) - (isNaN(dateA) ? 0 : dateA);
-      });
-      
-      // Re-render UI components dynamically
-      updateGroupDropdowns();
-      if (document.getElementById('trendChart')) initTrendChart();
-      if (document.getElementById('historyChart')) initHistoryChart();
-      if (document.getElementById('gradeDistChart')) initGradeDistChart();
-      renderHistoryList();
-      renderInterviewerTendencies();
-      renderVideosTable();
-      updateDashboardMetrics();
-      updateApiCostTracker();
+      cloudReady = true;
+      setCloudSyncBadge('ok');
+      applyCloudVideos(loadedVideos);
     } catch (err) {
       console.error("Error in Firestore videos onSnapshot callback:", err);
     }
   }, err => {
-    console.error("Firestore videos snapshot error:", err);
-    const globalSyncBadge = document.getElementById('global-sync-badge');
-    if (globalSyncBadge) {
-      globalSyncBadge.textContent = '🔴 同期エラー (設定/権限不足)';
-      globalSyncBadge.className = 'status-badge pending';
-    }
-    showToast('⚠️', `動画同期エラー: ${err.message}`);
+    // REST 側で同期できていれば実害はないので、画面には出さない
+    console.warn("Firestore videos snapshot error（REST で同期を継続します）:", err);
   });
-  
-  // Real-time listener for feedbacks
+
   firebaseDb.collection("feedbacks").onSnapshot(snapshot => {
     try {
-      let loadedFeedbacks = {};
+      if (snapshot.metadata.fromCache) return;
+      const loadedFeedbacks = {};
       snapshot.forEach(doc => {
         loadedFeedbacks[doc.id] = doc.data();
+        lastCloudJson[`feedbacks/${doc.id}`] = stableStringify(loadedFeedbacks[doc.id]);
       });
-      Object.assign(MOCK_FEEDBACKS, loadedFeedbacks);
-      updateApiCostTracker();
+      applyCloudFeedbacks(loadedFeedbacks);
     } catch (err) {
       console.error("Error in Firestore feedbacks onSnapshot callback:", err);
     }
   }, err => {
-    console.error("Firestore feedbacks snapshot error:", err);
-    showToast('⚠️', `評価同期エラー: ${err.message}`);
+    console.warn("Firestore feedbacks snapshot error（REST で同期を継続します）:", err);
   });
 
   // Real-time listener for shared settings (Gemini API Key)
@@ -3991,8 +4287,8 @@ function deleteVideo(key) {
   
   // 3. Remove from Firestore if connected
   if (typeof firebaseDb !== 'undefined' && firebaseDb) {
-    firebaseDb.collection("videos").doc(key).delete().catch(err => console.error("Firestore video delete error:", err));
-    firebaseDb.collection("feedbacks").doc(key).delete().catch(err => console.error("Firestore feedback delete error:", err));
+    deleteCloudDoc('videos', key);
+    deleteCloudDoc('feedbacks', key);
   }
   
   // 4. Save state, refresh views
@@ -4164,8 +4460,7 @@ function reanalyzeVideo(key) {
   // Remove existing feedback from MOCK_FEEDBACKS
   delete MOCK_FEEDBACKS[key];
   if (firebaseDb) {
-    firebaseDb.collection("feedbacks").doc(key).delete()
-      .catch(err => console.error("Firestore feedback delete error:", err));
+    deleteCloudDoc('feedbacks', key);
   }
   
   // Save state (will sync status update to Firestore)
@@ -4341,19 +4636,18 @@ async function recoverOrphanedFeedbacks() {
   
   try {
     // 1. Load all feedbacks from Firestore
-    const feedbacksSnap = await firebaseDb.collection("feedbacks").get();
+    // 常時接続が使えない環境でも動くよう REST で読む
     const allFeedbacks = {};
-    feedbacksSnap.forEach(doc => {
-      allFeedbacks[doc.id] = doc.data();
+    (await restListCollection('feedbacks')).forEach(d => {
+      allFeedbacks[d.id] = d.data;
     });
     
     // 2. Load all videos from Firestore
-    const videosSnap = await firebaseDb.collection("videos").get();
     const allVideoKeys = new Set();
     const allVideos = {};
-    videosSnap.forEach(doc => {
-      allVideoKeys.add(doc.id);
-      allVideos[doc.id] = doc.data();
+    (await restListCollection('videos')).forEach(d => {
+      allVideoKeys.add(d.id);
+      allVideos[d.id] = d.data;
     });
     
     // 3. Find orphaned feedbacks (feedback key doesn't match any video key)
@@ -4417,20 +4711,19 @@ async function recoverOrphanedFeedbacks() {
         console.log(`[Recovery] Matched orphan "${orphanKey}" (title: "${feedbackTitle}") → video "${matchedVideoKey}" (name: "${matchedVideo.name}")`);
         
         // 5. Copy feedback to the correct video key
-        await firebaseDb.collection("feedbacks").doc(matchedVideoKey).set(feedback);
+        await restSetDoc('feedbacks', matchedVideoKey, feedback);
+        lastCloudJson[`feedbacks/${matchedVideoKey}`] = stableStringify(feedback);
         
         // 6. Update the video's status to 'done' with score/grade from feedback
         const grade = feedback.grade || 'C';
         const score = feedback.total || 0;
-        await firebaseDb.collection("videos").doc(matchedVideoKey).update({
-          status: 'done',
-          grade: grade,
-          score: score,
-          isMock: feedback.isMock || false
-        });
+        const updatedVideo = { ...matchedVideo, status: 'done', grade: grade, score: score, isMock: feedback.isMock || false };
+        await restSetDoc('videos', matchedVideoKey, updatedVideo);
+        lastCloudJson[`videos/${matchedVideoKey}`] = stableStringify(updatedVideo);
         
         // 7. Delete the orphaned feedback document
-        await firebaseDb.collection("feedbacks").doc(orphanKey).delete();
+        await restDeleteDoc('feedbacks', orphanKey);
+        delete lastCloudJson[`feedbacks/${orphanKey}`];
         
         // 8. Update local state
         MOCK_FEEDBACKS[matchedVideoKey] = feedback;
@@ -4503,8 +4796,7 @@ async function resetMockResults() {
       v.score = null;
       v.model = '';
       if (firebaseDb) {
-        await firebaseDb.collection("feedbacks").doc(v.key).delete()
-          .catch(e => console.warn('評価の削除に失敗:', e));
+        await deleteCloudDoc('feedbacks', v.key);
       }
     }
 
@@ -4561,8 +4853,8 @@ async function cleanupDemoData() {
     for (const v of demoVideos) {
       // Remove from Firestore
       if (firebaseDb) {
-        await firebaseDb.collection("videos").doc(v.key).delete().catch(e => console.warn('Video delete error:', e));
-        await firebaseDb.collection("feedbacks").doc(v.key).delete().catch(e => console.warn('Feedback delete error:', e));
+        await deleteCloudDoc('videos', v.key);
+        await deleteCloudDoc('feedbacks', v.key);
       }
       // Remove from local state
       delete MOCK_FEEDBACKS[v.key];
