@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.8.5';
+const APP_VERSION = 'v2.8.6';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -574,6 +574,13 @@ let lastSyncVersion = null;
 let lastCloudCheckAt = 0;
 let cloudReadBlocked = false;                  // 直近の読み込みが失敗しているか（間隔を空ける）
 let syncBumpTimer = null;
+// 起動時点の手元の内容。クラウドを読めない間に変えた行（取り込み・面接官欄の変更など）を見分けて、
+// 「未送信」として控えるのに使う。控えないと、復旧後にクラウドを読んだ時点で消えてしまう
+// （v2.8.5、利用上限超過の最中に取り込んだ録画が一覧から消える不具合）。
+const localBaselineJson = {};
+// これ以降に作られた録画で、クラウドに無く手元にだけあるものは送り直す。
+// 削除済みの印（v2.8.5〜）より前の録画は、削除されたのか未送信なのか区別できないので対象にしない。
+const RECOVER_LOCAL_ONLY_SINCE = Date.UTC(2026, 8, 18, 4, 0, 0);
 let cloudReady = false;              // クラウドの内容を一度でも読めたか
 let restLoadedOnce = false;          // REST で評価まで全件読み込んだか（以降は差分だけ取り直す）
 let cloudPollTimer = null;
@@ -1078,6 +1085,16 @@ function reconcileLocalWithCloud(cloudVideos, cloudFeedbacks) {
     fixes.push(`録画の行が消えていた分析結果を一覧に戻す: ${fb.title}`);
   }
 
+  // (2b) 手元にだけある録画（クラウドを読めない間に取り込んだものなど）
+  VIDEOS_DATA.forEach(lv => {
+    if (!lv || !lv.key || !lv.key.startsWith('custom_')) return;
+    if (cloudVideos[lv.key] || isDeleted(lv.key)) return;
+    if (pendingCloudPaths.has(`videos/${lv.key}`)) return;
+    if (keyTimestamp(lv.key) < RECOVER_LOCAL_ONLY_SINCE) return;
+    queueCloudWrite('videos', lv.key, withoutFileObject(lv));
+    fixes.push(`この端末にだけあった録画を送信: ${lv.name}`);
+  });
+
   // (3) 面接官欄が「その他」のままの行
   Object.values(cloudVideos).forEach(cv => {
     if (!cv || cv.deleted === true || DEMO_VIDEO_KEYS.includes(cv.key)) return;
@@ -1220,6 +1237,36 @@ function collectCustomFeedbacks() {
   return customFeedbacks;
 }
 
+function captureLocalBaseline() {
+  VIDEOS_DATA.forEach(v => {
+    if (v && v.key) localBaselineJson[`videos/${v.key}`] = stableStringify(withoutFileObject(v));
+  });
+  const customFeedbacks = collectCustomFeedbacks();
+  for (const k in customFeedbacks) localBaselineJson[`feedbacks/${k}`] = stableStringify(customFeedbacks[k]);
+}
+
+// クラウドを読めない間の保存。起動時から変わった行だけを未送信として控え、読めるようになったら送る
+function markLocalChangesAsUnsent() {
+  let changed = false;
+  VIDEOS_DATA.forEach(v => {
+    if (!v || !v.key) return;
+    const path = `videos/${v.key}`;
+    if (stableStringify(withoutFileObject(v)) !== localBaselineJson[path] && !pendingCloudPaths.has(path)) {
+      pendingCloudPaths.add(path);
+      changed = true;
+    }
+  });
+  const customFeedbacks = collectCustomFeedbacks();
+  for (const k in customFeedbacks) {
+    const path = `feedbacks/${k}`;
+    if (stableStringify(customFeedbacks[k]) !== localBaselineJson[path] && !pendingCloudPaths.has(path)) {
+      pendingCloudPaths.add(path);
+      changed = true;
+    }
+  }
+  if (changed) persistSyncBookkeeping();
+}
+
 function persistStateLocally() {
   try {
     localStorage.setItem('interview_history_data', JSON.stringify(HISTORY_DATA));
@@ -1236,8 +1283,10 @@ function saveStateToLocalStorage() {
 
     if (firebaseDb) {
       if (!cloudReady) {
-        // 古い控えでクラウドを上書きしないよう、クラウドを一度読むまでは送らない
-        console.warn('クラウドの内容をまだ読み込めていないため、クラウドへの保存を見送りました（端末には保存済み）。');
+        // 古い控えでクラウドを上書きしないよう、クラウドを一度読むまでは送らない。
+        // ただし、この画面で変えた行は未送信として控え、読めるようになったら送る
+        markLocalChangesAsUnsent();
+        console.warn('クラウドをまだ読み込めていないため、変更は端末に控えました（読み込めたら自動で送ります）。');
       } else {
         VIDEOS_DATA.forEach(v => {
           if (!v || !v.key) return;
@@ -1263,6 +1312,7 @@ function setupFirestoreRealtimeSync() {
   // 🟢 は実際にクラウドを読めてから出す（以前は接続確認前に 🟢 を出していたため、
   // 受信できていない端末でも正常に見えていた）
   setCloudSyncBadge('checking');
+  captureLocalBaseline();
 
   // 同期は REST だけで行う（起動時に全件、以降は30秒ごとに変更の印を確認）。常時接続が使えない環境でも動く
   startCloudPolling();
