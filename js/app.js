@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.8.3';
+const APP_VERSION = 'v2.8.5';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -553,8 +553,7 @@ function notifyCloudSaveFailed(err) {
 //   ・保存を端末内に溜め込むだけでクラウドに送らない
 // 状態になる（2026-09-18、管理者の端末で Listen/channel が 404 を返し続け、
 // 他の人の分析結果も、クラウド側で直した面接官欄も一切反映されなかった）。
-// そこで読み書きの本線を、ふつうの HTTPS 1往復で済む REST に置き換える。
-// SDK の購読は「繋がる環境なら即時に反映される」おまけとして残す。
+// そこで録画・評価の読み書きは、ふつうの HTTPS 1往復で済む REST だけで行う。
 //
 // 【保存は差分だけ】以前は保存のたびに端末内の全録画をクラウドへ丸ごと set() していた。
 // 古い控えを持った端末で何か1つ操作すると、他の人の修正（面接官欄など）が巻き戻り、
@@ -562,7 +561,19 @@ function notifyCloudSaveFailed(err) {
 //
 // 【クラウドを読むまでは書かない】起動直後の手元の控えは古い可能性がある。
 // 一度もクラウドを読めていない状態で送ると、上と同じ巻き戻しが起きる。
-const CLOUD_POLL_INTERVAL_MS = 30000;
+//
+// 【読み取り回数に注意】Firestore は無料枠（1日の読み取り回数）を超えると 429 で全員が読めなくなる。
+// v2.8.3 は30秒ごとに録画を全件読み直していたため、開いている画面の数だけ枠を食い、
+// 当日中に上限へ達した（2026-09-18 12:55 に 429）。普段は「変更の印」1件だけを読み、
+// 変わったときだけ一覧を読み直すこと。全件の定期読み込みを短い間隔に戻さないこと。
+const CLOUD_POLL_INTERVAL_MS = 30000;          // 変更の印（shared_settings/sync_state）を確認する間隔。1回＝1読み取り
+const CLOUD_FULL_RELOAD_MS = 30 * 60 * 1000;   // 印を更新しない旧版の端末の変更も拾うための全件読み直し
+const CLOUD_BACKOFF_MS = 5 * 60 * 1000;        // 利用上限（429）や通信失敗のときは間隔を空ける
+let lastFullPullAt = 0;
+let lastSyncVersion = null;
+let lastCloudCheckAt = 0;
+let cloudReadBlocked = false;                  // 直近の読み込みが失敗しているか（間隔を空ける）
+let syncBumpTimer = null;
 let cloudReady = false;              // クラウドの内容を一度でも読めたか
 let restLoadedOnce = false;          // REST で評価まで全件読み込んだか（以降は差分だけ取り直す）
 let cloudPollTimer = null;
@@ -571,7 +582,61 @@ const lastCloudJson = {};            // 'videos/<key>' → クラウド上の内
 const videoUpdateTimes = {};         // 録画キー → クラウドの updateTime（評価の取り直し判定に使う）
 const cloudWriteQueue = {};          // path → 次に送る内容（同じ行は最新だけ送る）
 const cloudWriteRunning = {};        // path → 送信中か
-const pendingCloudPaths = new Set(); // 送信待ち・送信中の path（取り込みで上書きしない）
+// 送信待ち・送信中・送信失敗の path。送れるまで端末に控え、再読み込み後も自動で再送する。
+// ここに載っている行は、クラウドから取り込んでも手元の内容を正とする（まだ届いていないだけなので）。
+const pendingCloudPaths = new Set(loadJsonFromStorage('interview_unsent_paths', []));
+// 削除した録画は文書を消さず「削除済み」の印（deleted: true）を残す。
+// 文書ごと消すと、古い控えを持った端末が「クラウドに無い＝未送信」と見なして復活させてしまう。
+const deletedVideoKeys = new Set();
+const localTombstones = loadJsonFromStorage('interview_deleted_videos', {}); // 送信待ちの削除印
+let restFailedOnce = false;
+// 手元にしか無い録画を送り直すのは、作成から14日以内のものだけ（古い削除済みデータの復活を防ぐ）
+const RESEND_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+function loadJsonFromStorage(name, fallback) {
+  try {
+    const raw = localStorage.getItem(name);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function persistSyncBookkeeping() {
+  try {
+    localStorage.setItem('interview_unsent_paths', JSON.stringify([...pendingCloudPaths]));
+    localStorage.setItem('interview_deleted_videos', JSON.stringify(localTombstones));
+  } catch (e) {}
+}
+
+function withoutFileObject(row) {
+  const copy = { ...row };
+  delete copy.fileObject;
+  return copy;
+}
+
+function keyTimestamp(key) {
+  const m = /^custom_(\d{13})$/.exec(key || '');
+  return m ? Number(m[1]) : 0;
+}
+
+// 面接官名の候補（実データに登場する面接官欄の値）
+function collectKnownGroups(rows) {
+  const groups = new Set();
+  rows.forEach(r => {
+    if (!r || r.deleted === true || DEMO_VIDEO_KEYS.includes(r.key)) return;
+    if (r.group && r.group !== 'その他') groups.add(r.group);
+  });
+  return groups;
+}
+
+// ファイル名の先頭（「脇_採用…」「【田口_採用】…」など）から面接官を推定する。
+// 取り込み直後は面接官欄が「その他」になり、選び直し忘れると面接官で絞り込んだ一覧・履歴に
+// 出なくなる（2026-09-18、脇さんの2件がこれで見えなかった）。
+function inferGroupFromName(name, groups) {
+  const base = String(name || '').replace(/^[\s【\[（(]+/, '');
+  return [...groups].sort((a, b) => b.length - a.length).find(g => base.startsWith(g)) || '';
+}
 
 function firestoreRestBase() {
   const config = getFirebaseConfig();
@@ -638,6 +703,13 @@ function stableStringify(v) {
     .join(',') + '}';
 }
 
+function httpError(message, status) {
+  const err = new Error(`${message} (HTTP ${status})`);
+  err.status = status;
+  err.code = status === 429 ? 'クラウドの利用上限に達しています' : `HTTP ${status}`;
+  return err;
+}
+
 async function restListCollection(collection) {
   const docs = [];
   let pageToken = '';
@@ -645,7 +717,7 @@ async function restListCollection(collection) {
     const url = `${firestoreRestBase()}/${collection}?pageSize=300&${firestoreRestKeyParam()}`
               + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
     const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) throw new Error(`${collection} の取得に失敗 (HTTP ${res.status})`);
+    if (!res.ok) throw httpError(`${collection} の取得に失敗`, res.status);
     const json = await res.json();
     (json.documents || []).forEach(d => {
       docs.push({ id: d.name.split('/').pop(), updateTime: d.updateTime, data: fromFirestoreFields(d.fields || {}) });
@@ -659,7 +731,7 @@ async function restGetDoc(collection, id) {
   const url = `${firestoreRestBase()}/${collection}/${encodeURIComponent(id)}?${firestoreRestKeyParam()}`;
   const res = await fetch(url, { cache: 'no-store' });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`${collection}/${id} の取得に失敗 (HTTP ${res.status})`);
+  if (!res.ok) throw httpError(`${collection}/${id} の取得に失敗`, res.status);
   const json = await res.json();
   return fromFirestoreFields(json.fields || {});
 }
@@ -672,11 +744,7 @@ async function restSetDoc(collection, id, data) {
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
     body: JSON.stringify({ fields: toFirestoreFields(data) })
   });
-  if (!res.ok) {
-    const err = new Error(`${collection}/${id} の保存に失敗 (HTTP ${res.status})`);
-    err.code = `HTTP ${res.status}`;
-    throw err;
-  }
+  if (!res.ok) throw httpError(`${collection}/${id} の保存に失敗`, res.status);
 }
 
 async function restDeleteDoc(collection, id) {
@@ -689,11 +757,15 @@ function queueCloudWrite(collection, id, data) {
   if (!firebaseDb || !id) return;
   const path = `${collection}/${id}`;
   const json = stableStringify(data);
-  if (!cloudWriteRunning[path] && !cloudWriteQueue[path] && lastCloudJson[path] === json) return;
+  if (!cloudWriteRunning[path] && !cloudWriteQueue[path] && lastCloudJson[path] === json) {
+    if (pendingCloudPaths.delete(path)) persistSyncBookkeeping();
+    return;
+  }
   if (cloudWriteQueue[path] && cloudWriteQueue[path].json === json) return;
   // 送る時点の内容で固定する（送信待ちの間に画面側のオブジェクトが書き換わっても混ざらないように）
   cloudWriteQueue[path] = { collection, id, data: JSON.parse(JSON.stringify(data)), json };
   pendingCloudPaths.add(path);
+  persistSyncBookkeeping();
   if (!cloudWriteRunning[path]) runCloudWrite(path);
 }
 
@@ -704,27 +776,96 @@ async function runCloudWrite(path) {
     while (cloudWriteQueue[path]) {
       const job = cloudWriteQueue[path];
       delete cloudWriteQueue[path];
-      if (lastCloudJson[path] === job.json) continue;
+      if (lastCloudJson[path] === job.json) {
+        if (!cloudWriteQueue[path]) pendingCloudPaths.delete(path);
+        continue;
+      }
       try {
         await restSetDoc(job.collection, job.id, job.data);
         lastCloudJson[path] = job.json;
+        if (job.collection === 'videos' && job.data.deleted === true) {
+          deletedVideoKeys.add(job.id);
+          delete localTombstones[job.id];
+        }
+        if (!cloudWriteQueue[path]) pendingCloudPaths.delete(path);
+        bumpSyncVersion();
       } catch (err) {
-        console.error('クラウド保存に失敗しました:', path, err);
+        // 失敗した path は pendingCloudPaths に残し、次の同期（30秒ごと）で送り直す
+        console.error('クラウド保存に失敗しました（自動で再送します）:', path, err);
         notifyCloudSaveFailed(err);
       }
     }
   } finally {
     cloudWriteRunning[path] = false;
-    pendingCloudPaths.delete(path);
+    persistSyncBookkeeping();
+    // 送り終えたら「未送信 N件」の表示をすぐ更新する（次の確認まで待たせない）
+    if (cloudReady && !cloudReadBlocked && !Object.values(cloudWriteRunning).some(Boolean)) {
+      setCloudSyncBadge('ok');
+    }
   }
+}
+
+// 他の端末に「変更があった」と知らせる印を更新する。続けて保存したときは最後に1回だけ書く
+function bumpSyncVersion() {
+  if (syncBumpTimer) clearTimeout(syncBumpTimer);
+  syncBumpTimer = setTimeout(() => {
+    syncBumpTimer = null;
+    restSetDoc('shared_settings', 'sync_state', { version: Date.now(), updatedAt: new Date().toISOString() })
+      .catch(err => console.warn('変更の印を更新できませんでした（他の端末への反映が最大30分遅れます）:', err));
+  }, 1500);
+}
+
+// 送れていない行を、手元の最新の内容で送り直す
+function retryUnsentWrites() {
+  if (!cloudReady) return;
+  [...pendingCloudPaths].forEach(path => {
+    if (cloudWriteRunning[path] || cloudWriteQueue[path]) return;
+    const slash = path.indexOf('/');
+    const collection = path.slice(0, slash);
+    const id = path.slice(slash + 1);
+    let data = null;
+    if (collection === 'videos') {
+      if (localTombstones[id]) {
+        data = localTombstones[id];
+      } else {
+        const row = VIDEOS_DATA.find(v => v.key === id);
+        if (row) data = withoutFileObject(row);
+      }
+    } else if (collection === 'feedbacks') {
+      data = MOCK_FEEDBACKS[id] || null;
+    }
+    if (data) {
+      queueCloudWrite(collection, id, data);
+    } else {
+      pendingCloudPaths.delete(path);
+    }
+  });
+  persistSyncBookkeeping();
+}
+
+// 録画を削除する。文書は消さずに削除済みの印を残す（上の deletedVideoKeys の説明を参照）
+function markVideoDeletedInCloud(row) {
+  if (!row || !row.key) return;
+  const tombstone = {
+    ...withoutFileObject(row),
+    status: 'deleted',   // 旧版の画面でも履歴・一覧に出ないように
+    hidden: true,
+    deleted: true,
+    deletedAt: new Date().toISOString()
+  };
+  deletedVideoKeys.add(row.key);
+  localTombstones[row.key] = tombstone;
+  persistSyncBookkeeping();
+  queueCloudWrite('videos', row.key, tombstone);
 }
 
 function deleteCloudDoc(collection, id) {
   if (!firebaseDb || !id) return Promise.resolve();
   const path = `${collection}/${id}`;
   delete cloudWriteQueue[path];
+  if (pendingCloudPaths.delete(path)) persistSyncBookkeeping();
   return restDeleteDoc(collection, id)
-    .then(() => { delete lastCloudJson[path]; })
+    .then(() => { delete lastCloudJson[path]; bumpSyncVersion(); })
     .catch(err => {
       console.error('クラウドからの削除に失敗しました:', path, err);
       notifyCloudSaveFailed(err);
@@ -734,10 +875,14 @@ function deleteCloudDoc(collection, id) {
 function setCloudSyncBadge(state) {
   const badge = document.getElementById('global-sync-badge');
   const firebaseStatus = document.getElementById('firebase-status');
+  const unsent = pendingCloudPaths.size;
   const views = {
     checking: ['🟡 クラウド確認中…', 'pending', '接続確認中'],
-    ok:       ['🟢 クラウド同期中', 'done', '接続完了（クラウド同期中）'],
-    offline:  ['🔴 クラウドに接続できません（この端末の控えを表示中）', 'pending', '接続エラー（この端末の控えを表示中）']
+    ok:       unsent > 0
+      ? [`🟡 クラウド未送信 ${unsent}件（自動で再送中）`, 'pending', `接続完了（未送信 ${unsent}件を再送中）`]
+      : ['🟢 クラウド同期中', 'done', '接続完了（クラウド同期中）'],
+    offline:  ['🔴 クラウドに接続できません（この端末の控えを表示中）', 'pending', '接続エラー（この端末の控えを表示中）'],
+    quota:    ['🔴 クラウドの利用上限に達しました（16〜17時ごろ復旧・この端末に控えています）', 'pending', '利用上限超過（16〜17時ごろ復旧）']
   };
   const [text, cls, statusText] = views[state] || views.checking;
   if (badge) {
@@ -752,13 +897,18 @@ function setCloudSyncBadge(state) {
 
 // クラウドから取り込んだ録画一覧を画面に反映する（REST・SDK 共通の合流点）
 function applyCloudVideos(loadedVideos) {
+  // 削除済みの印が付いた録画は表示しない
+  loadedVideos = loadedVideos.filter(lv => {
+    if (lv.deleted === true) deletedVideoKeys.add(lv.key);
+    return lv.deleted !== true && !localTombstones[lv.key];
+  });
   // 自分が送信中の行は、手元の内容を正とする（送る前の古い内容に戻さない）
   loadedVideos = loadedVideos.map(lv => {
     const local = VIDEOS_DATA.find(v => v.key === lv.key);
     return (local && pendingCloudPaths.has(`videos/${lv.key}`)) ? local : lv;
   });
   VIDEOS_DATA.forEach(v => {
-    if (pendingCloudPaths.has(`videos/${v.key}`) && !loadedVideos.some(lv => lv.key === v.key)) {
+    if (pendingCloudPaths.has(`videos/${v.key}`) && !localTombstones[v.key] && !loadedVideos.some(lv => lv.key === v.key)) {
       loadedVideos.push(v);
     }
   });
@@ -843,12 +993,121 @@ function applyCloudFeedbacks(loadedFeedbacks) {
   updateApiCostTracker();
 }
 
+// 起動して最初にクラウドを読んだとき、手元の控えとクラウドを突き合わせて取りこぼしを埋める。
+//  (1) この端末にだけある分析結果（送信に失敗した・旧版で常時接続が使えず届かなかった）を送り直す
+//  (2) 評価だけ残って録画の行が消えたもの（迷子）を一覧に戻す
+//  (3) 面接官欄が「その他」のままの行を、ファイル名から埋める
+// どの端末で開いても同じ結論になる（冪等）ので、複数の端末が同時に直しても壊れない。
+function reconcileLocalWithCloud(cloudVideos, cloudFeedbacks) {
+  const fixes = [];
+  const isDeleted = k => deletedVideoKeys.has(k) || !!localTombstones[k];
+  const isRealFeedback = fb => !!fb && typeof fb === 'object' && fb.isMock !== true;
+  const knownGroups = collectKnownGroups([...Object.values(cloudVideos), ...VIDEOS_DATA]);
+  const upsertLocal = row => {
+    const i = VIDEOS_DATA.findIndex(v => v.key === row.key);
+    if (i >= 0) {
+      const fileObject = VIDEOS_DATA[i].fileObject;
+      if (fileObject instanceof File) row.fileObject = fileObject;
+      VIDEOS_DATA[i] = row;
+    } else {
+      VIDEOS_DATA.unshift(row);
+    }
+  };
+
+  // (1) この端末にだけある分析結果
+  for (const k in MOCK_FEEDBACKS) {
+    if (!k.startsWith('custom_')) continue;
+    const fb = MOCK_FEEDBACKS[k];
+    if (!isRealFeedback(fb) || cloudFeedbacks[k] || isDeleted(k)) continue;
+    const cv = cloudVideos[k];
+    const lv = VIDEOS_DATA.find(v => v.key === k);
+    let row;
+    if (cv) {
+      // 誰かが「再分析」「リセット」した後の古い結果は送らない
+      if (cv.resetAt && !(fb.analyzedAt && fb.analyzedAt > cv.resetAt)) continue;
+      row = {
+        ...cv,
+        status: 'done',
+        grade: fb.grade || cv.grade,
+        score: (fb.total !== undefined && fb.total !== null) ? fb.total : cv.score,
+        isNew: false,
+        hidden: false,
+        model: cv.model || (lv && lv.model) || ''
+      };
+    } else {
+      if (!lv || lv.status !== 'done') continue;
+      if (Date.now() - keyTimestamp(k) > RESEND_MAX_AGE_MS) continue;
+      row = withoutFileObject(lv);
+    }
+    upsertLocal(row);
+    queueCloudWrite('videos', k, withoutFileObject(row));
+    queueCloudWrite('feedbacks', k, fb);
+    fixes.push(`未送信だった分析結果を送信: ${row.name}`);
+  }
+
+  // (2) 評価だけ残って録画の行が無いもの
+  const cloudNames = new Set(Object.values(cloudVideos).filter(v => v.deleted !== true).map(v => v.name));
+  for (const k in cloudFeedbacks) {
+    const fb = cloudFeedbacks[k];
+    if (!k.startsWith('custom_') || cloudVideos[k] || isDeleted(k) || !isRealFeedback(fb)) continue;
+    // 同じ名前の録画がある＝やり直す前の古い結果なので戻さない
+    if (!fb.title || cloudNames.has(fb.title)) continue;
+    if (pendingCloudPaths.has(`videos/${k}`)) continue;
+    const parts = String(fb.subtitle || '').split(' ・ ');
+    const ts = keyTimestamp(k);
+    const dateFromSubtitle = (parts[0] || '').split(' ')[0];
+    const row = {
+      key: k,
+      name: fb.title,
+      date: /^\d{4}\/\d{1,2}\/\d{1,2}$/.test(dateFromSubtitle)
+        ? dateFromSubtitle
+        : (ts ? new Date(ts) : new Date()).toLocaleDateString('ja-JP'),
+      duration: parts[1] || '30分',
+      size: parts[2] || '—',
+      status: 'done',
+      grade: fb.grade || 'C',
+      score: (fb.total !== undefined && fb.total !== null) ? fb.total : 0,
+      isNew: false,
+      hidden: false,
+      group: inferGroupFromName(fb.title, knownGroups) || 'その他',
+      model: ''
+    };
+    upsertLocal(row);
+    queueCloudWrite('videos', k, row);
+    cloudNames.add(fb.title);
+    fixes.push(`録画の行が消えていた分析結果を一覧に戻す: ${fb.title}`);
+  }
+
+  // (3) 面接官欄が「その他」のままの行
+  Object.values(cloudVideos).forEach(cv => {
+    if (!cv || cv.deleted === true || DEMO_VIDEO_KEYS.includes(cv.key)) return;
+    if (cv.group && cv.group !== 'その他') return;
+    if (pendingCloudPaths.has(`videos/${cv.key}`)) return;
+    const group = inferGroupFromName(cv.name, knownGroups);
+    if (!group) return;
+    const row = { ...cv, group };
+    upsertLocal(row);
+    queueCloudWrite('videos', cv.key, row);
+    fixes.push(`面接官欄を「${group}」に設定: ${cv.name}`);
+  });
+
+  if (fixes.length > 0) {
+    console.info('[同期] クラウドに反映されていなかったデータを修復しました:\n' + fixes.join('\n'));
+    showToast('☁️', `クラウドに反映されていなかった ${fixes.length} 件を反映しました`);
+  }
+}
+
 // REST でクラウドの内容を読み込む。初回は評価も全件、以降は更新された録画の評価だけ取り直す
 async function pullFromCloudViaRest() {
   if (!firebaseDb || cloudPullRunning) return;
   cloudPullRunning = true;
   try {
     const firstLoad = !restLoadedOnce;
+    // 印を先に読む。一覧を読んでいる間に誰かが保存しても、次の確認で印の変化として拾える
+    const syncState = await restGetDoc('shared_settings', 'sync_state').catch(err => {
+      if (err && err.status === 429) throw err;
+      return null;
+    });
     const videoDocs = await restListCollection('videos');
 
     const loadedFeedbacks = {};
@@ -881,30 +1140,73 @@ async function pullFromCloudViaRest() {
     for (const k in loadedFeedbacks) lastCloudJson[`feedbacks/${k}`] = stableStringify(loadedFeedbacks[k]);
 
     cloudReady = true;
-    restLoadedOnce = true;
-    setCloudSyncBadge('ok');
-    if (changedAnything) {
-      applyCloudFeedbacks(loadedFeedbacks);
-      applyCloudVideos(videoDocs.map(d => ({ ...d.data, key: d.data.key || d.id })));
+    cloudReadBlocked = false;
+    lastFullPullAt = Date.now();
+    lastSyncVersion = syncState && syncState.version ? String(syncState.version) : '';
+    const cloudVideoRows = videoDocs.map(d => ({ ...d.data, key: d.data.key || d.id }));
+    if (firstLoad) {
+      const cloudVideosByKey = {};
+      cloudVideoRows.forEach(v => { cloudVideosByKey[v.key] = v; });
+      reconcileLocalWithCloud(cloudVideosByKey, loadedFeedbacks);
     }
+    retryUnsentWrites();
+    restLoadedOnce = true;
+    if (changedAnything || pendingCloudPaths.size > 0) {
+      applyCloudFeedbacks(loadedFeedbacks);
+      applyCloudVideos(cloudVideoRows);
+    }
+    setCloudSyncBadge('ok');
   } catch (err) {
     console.error('クラウドからの読み込みに失敗しました:', err);
-    setCloudSyncBadge('offline');
+    restFailedOnce = true;
+    handleCloudReadError(err);
   } finally {
     cloudPullRunning = false;
   }
 }
 
+function handleCloudReadError(err) {
+  cloudReadBlocked = true;
+  setCloudSyncBadge(err && err.status === 429 ? 'quota' : 'offline');
+}
+
+// 30秒ごとの確認。普段は変更の印を1件読むだけで、変わっていたときだけ一覧を読み直す
+async function checkCloudForChanges() {
+  if (!firebaseDb || cloudPullRunning) return;
+  lastCloudCheckAt = Date.now();
+  if (!restLoadedOnce || cloudReadBlocked || Date.now() - lastFullPullAt > CLOUD_FULL_RELOAD_MS) {
+    await pullFromCloudViaRest();
+    return;
+  }
+  try {
+    const state = await restGetDoc('shared_settings', 'sync_state');
+    const version = state && state.version ? String(state.version) : '';
+    if (version !== lastSyncVersion) {
+      await pullFromCloudViaRest();
+    } else {
+      retryUnsentWrites();
+      setCloudSyncBadge('ok');
+    }
+  } catch (err) {
+    console.error('クラウドの変更確認に失敗しました:', err);
+    handleCloudReadError(err);
+  }
+}
+
 function startCloudPolling() {
-  pullFromCloudViaRest();
-  if (cloudPollTimer) clearInterval(cloudPollTimer);
-  cloudPollTimer = setInterval(() => {
-    if (document.visibilityState === 'hidden') return;
-    pullFromCloudViaRest();
-  }, CLOUD_POLL_INTERVAL_MS);
-  // 別タブから戻ってきたときは待たずに取り直す
+  const schedule = () => {
+    if (cloudPollTimer) clearTimeout(cloudPollTimer);
+    cloudPollTimer = setTimeout(async () => {
+      if (document.visibilityState !== 'hidden') await checkCloudForChanges();
+      schedule();
+    }, cloudReadBlocked ? CLOUD_BACKOFF_MS : CLOUD_POLL_INTERVAL_MS);
+  };
+  pullFromCloudViaRest().finally(schedule);
+  // 別タブから戻ってきたときは待たずに確認する（短時間に何度も切り替えても読みすぎないように間引く）
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') pullFromCloudViaRest();
+    if (document.visibilityState !== 'visible') return;
+    if (cloudReadBlocked || Date.now() - lastCloudCheckAt < 10000) return;
+    checkCloudForChanges();
   });
 }
 
@@ -962,46 +1264,11 @@ function setupFirestoreRealtimeSync() {
   // 受信できていない端末でも正常に見えていた）
   setCloudSyncBadge('checking');
 
-  // 本線は REST（起動時＋30秒ごと）。常時接続が使えない環境でもこれで同期できる
+  // 同期は REST だけで行う（起動時に全件、以降は30秒ごとに変更の印を確認）。常時接続が使えない環境でも動く
   startCloudPolling();
 
-  // SDK の購読は、繋がる環境で即時に反映するためのおまけ。
-  // fromCache（サーバから届いていない）のスナップショットは中身が不完全なので使わない。
-  firebaseDb.collection("videos").onSnapshot(snapshot => {
-    try {
-      if (snapshot.metadata.fromCache) return;
-      const loadedVideos = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        loadedVideos.push({ ...data, key: data.key || doc.id });
-        lastCloudJson[`videos/${doc.id}`] = stableStringify(data);
-      });
-      cloudReady = true;
-      setCloudSyncBadge('ok');
-      applyCloudVideos(loadedVideos);
-    } catch (err) {
-      console.error("Error in Firestore videos onSnapshot callback:", err);
-    }
-  }, err => {
-    // REST 側で同期できていれば実害はないので、画面には出さない
-    console.warn("Firestore videos snapshot error（REST で同期を継続します）:", err);
-  });
-
-  firebaseDb.collection("feedbacks").onSnapshot(snapshot => {
-    try {
-      if (snapshot.metadata.fromCache) return;
-      const loadedFeedbacks = {};
-      snapshot.forEach(doc => {
-        loadedFeedbacks[doc.id] = doc.data();
-        lastCloudJson[`feedbacks/${doc.id}`] = stableStringify(loadedFeedbacks[doc.id]);
-      });
-      applyCloudFeedbacks(loadedFeedbacks);
-    } catch (err) {
-      console.error("Error in Firestore feedbacks onSnapshot callback:", err);
-    }
-  }, err => {
-    console.warn("Firestore feedbacks snapshot error（REST で同期を継続します）:", err);
-  });
+  // videos / feedbacks は SDK では購読しない。REST と二重に読むと読み取り回数が倍になり、
+  // 無料枠の上限に早く達する。他の端末の変更は「変更の印」で拾う（CLOUD_POLL_INTERVAL_MS 参照）。
 
   // Real-time listener for shared settings (Gemini API Key)
   firebaseDb.collection("shared_settings").doc("gemini").onSnapshot(doc => {
@@ -3293,7 +3560,11 @@ function updatePreviewsWithResults(candidateKey) {
 }
 
 function integrateResultsIntoApp(candidateKey) {
-  const baseTitle = parsedResult.title.replace('.mp4', '').replace('.mp3', '');
+  // 再分析・リセットより後の結果かどうかの判定に使う（reconcileLocalWithCloud 参照）
+  if (parsedResult && parsedResult.isMock !== true) {
+    parsedResult.analyzedAt = new Date().toISOString();
+  }
+const baseTitle = parsedResult.title.replace('.mp4', '').replace('.mp3', '');
   
   const modelSelect = document.getElementById('settings-model-select');
   // デモ結果に使用モデルを書くと、一覧で本物の分析と見分けがつかなくなる
@@ -3909,7 +4180,7 @@ function handleVideosFileSelect(file) {
     isNew: true,
     hidden: false,
     fileObject: file,
-    group: 'その他'
+    group: inferGroupFromName(file.name, collectKnownGroups(VIDEOS_DATA)) || 'その他'
   };
   
   VIDEOS_DATA.unshift(newVideo);
@@ -4279,15 +4550,17 @@ function deleteVideo(key) {
     return;
   }
   
+  const target = VIDEOS_DATA.find(v => v.key === key);
+
   // 1. Remove from VIDEOS_DATA
   VIDEOS_DATA = VIDEOS_DATA.filter(v => v.key !== key);
-  
+
   // 2. Remove from MOCK_FEEDBACKS
   delete MOCK_FEEDBACKS[key];
-  
-  // 3. Remove from Firestore if connected
+
+  // 3. クラウドには削除済みの印を残し、評価は消す
   if (typeof firebaseDb !== 'undefined' && firebaseDb) {
-    deleteCloudDoc('videos', key);
+    markVideoDeletedInCloud(target || { key });
     deleteCloudDoc('feedbacks', key);
   }
   
@@ -4456,7 +4729,9 @@ function reanalyzeVideo(key) {
   video.status = 'pending';
   video.score = null;
   video.grade = '—';
-  
+  // 他の端末に残っている古い結果を「未送信」と取り違えて送り直させないための印
+  video.resetAt = new Date().toISOString();
+
   // Remove existing feedback from MOCK_FEEDBACKS
   delete MOCK_FEEDBACKS[key];
   if (firebaseDb) {
@@ -4618,6 +4893,8 @@ function resetVideoStatusToPending(key) {
     video.status = 'pending';
     video.score = null;
     video.grade = '—';
+    // 他の端末に残っている古い結果を「未送信」と取り違えて送り直させないための印
+    video.resetAt = new Date().toISOString();
     saveStateToLocalStorage();
     renderVideosTable();
     updateDashboardMetrics();
@@ -4724,6 +5001,7 @@ async function recoverOrphanedFeedbacks() {
         // 7. Delete the orphaned feedback document
         await restDeleteDoc('feedbacks', orphanKey);
         delete lastCloudJson[`feedbacks/${orphanKey}`];
+        bumpSyncVersion();
         
         // 8. Update local state
         MOCK_FEEDBACKS[matchedVideoKey] = feedback;
