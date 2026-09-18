@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.8.6';
+const APP_VERSION = 'v2.8.7';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -2291,6 +2291,7 @@ async function uploadFileToGemini(file, apiKey) {
   let offset = 0;
   let fileMetadata = null;
   let lastLoggedPercent = -10; // 10%刻みでログ出力（DOM更新を削減）
+  let stalledCount = 0;        // 受信済み位置を問い合わせても進まなかった回数
 
   while (offset < file.size) {
     const end = Math.min(offset + chunkSize, file.size);
@@ -2306,15 +2307,29 @@ async function uploadFileToGemini(file, apiKey) {
 
     const chunkResponse = await uploadChunkWithRetry(uploadUrl, chunk, offset, command, contentType, file.size);
 
-    // サーバ側が既に先まで受信していた場合（リトライ時によく起きる）はそのオフセットまで進める
+    // 送信に失敗した・位置がずれていると言われたときは、サーバの受信済み位置から送り直す。
+    // 回線が切れたように見えてもチャンクの一部はサーバに届いていることがあり、
+    // 手元の位置のまま送ると「Client uploaded to the wrong offset」（HTTP 400）で拒否される
+    // （2026-09-18、330MB の録画が 256MB 地点でこれにより失敗した）。
+    // 受信済み位置が手元より先でも手前でも、サーバの値に合わせる。
     if (chunkResponse === null) {
       const received = await queryUploadOffset(uploadUrl);
-      if (received === null || received <= offset) {
-        throw new Error(`アップロードがオフセット ${offset} で進まなくなりました。回線状況を確認して再実行してください。`);
+      if (received === null || received > file.size) {
+        throw new Error(`アップロードの受信済み位置を確認できませんでした（${formatBytes(offset)} 地点）。回線状況を確認して再実行してください。`);
+      }
+      if (received === offset) {
+        stalledCount++;
+        if (stalledCount >= 3) {
+          throw new Error(`アップロードが ${formatBytes(offset)} 地点から進まなくなりました。回線状況を確認して再実行してください。`);
+        }
+      } else {
+        stalledCount = 0;
+        logToConsole('info', `[INFO] サーバの受信済み位置（${formatBytes(received)}）から送信を再開します。`);
       }
       offset = received;
       continue;
     }
+    stalledCount = 0;
 
     if (isLastChunk) {
       fileMetadata = await chunkResponse.json().catch(() => null);
@@ -2378,6 +2393,12 @@ async function uploadChunkWithRetry(uploadUrl, chunk, offset, command, contentTy
 
       const errorText = await response.text();
 
+      // 送信位置のずれ。サーバの受信済み位置を問い合わせて、そこから再開させる
+      if (response.status === 400 && /wrong offset/i.test(errorText)) {
+        logToConsole('error', `[WARNING] 送信位置がサーバとずれていました（${formatBytes(offset)} 地点）。受信済み位置を確認して再開します...`);
+        return null;
+      }
+
       // 400/403/404 はリトライしても直らない（セッション失効・権限・課金・クォータ）
       if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
         throw new Error(
@@ -2390,6 +2411,13 @@ async function uploadChunkWithRetry(uploadUrl, chunk, offset, command, contentTy
       // fetch 自体が reject（回線断・CORS・タイムアウト）
       if (err && /チャンクアップロード失敗/.test(err.message)) throw err;
       lastError = err;
+      // 途中まで届いている可能性がある。受信済み位置が手元と違えば、同じチャンクを送り直さず
+      // 呼び出し側でその位置から再開させる
+      const received = await queryUploadOffset(uploadUrl);
+      if (received !== null && received !== offset) {
+        logToConsole('error', `[WARNING] オフセット ${formatBytes(offset)} の送信が途中で切れました（${lastError && lastError.message ? lastError.message : '不明'}）。受信済み位置から再開します...`);
+        return null;
+      }
     }
 
     if (attempt < maxAttempts) {
