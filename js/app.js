@@ -6,7 +6,7 @@
 // js/app.js?v= を揃えて更新する。フッター表示とログはこの値を参照するので、
 // 画面のバージョン表記＝実際に読み込まれた app.js のバージョンになる
 // （キャッシュで古い app.js を掴んでいれば、フッターも古い値のまま出る）。
-const APP_VERSION = 'v2.8.7';
+const APP_VERSION = 'v2.8.8';
 
 /// ===== Mock Data =====
 const CRITERIA = [
@@ -625,6 +625,18 @@ function withoutFileObject(row) {
 function keyTimestamp(key) {
   const m = /^custom_(\d{13})$/.exec(key || '');
   return m ? Number(m[1]) : 0;
+}
+
+// 一覧は新しい順（登録が新しいものが上）。キーに登録時刻が入っているのでそれを使い、無ければ日付で比べる
+function videoSortTime(v) {
+  const ts = keyTimestamp(v && v.key);
+  if (ts) return ts;
+  const m = /(\d{4})\D(\d{1,2})\D(\d{1,2})/.exec(String((v && v.date) || ''));
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime() : 0;
+}
+
+function sortVideosNewestFirst(list) {
+  return list.slice().sort((a, b) => videoSortTime(b) - videoSortTime(a));
 }
 
 // 面接官名の候補（実データに登場する面接官欄の値）
@@ -1498,7 +1510,7 @@ function showFeedbackPage(key) {
         interviewerSelect.value = video.group || 'その他';
         
         // Re-populate video select for this interviewer
-        const videos = VIDEOS_DATA.filter(v => v.status === 'done' && (v.group || 'その他') === (video.group || 'その他'));
+        const videos = sortVideosNewestFirst(VIDEOS_DATA.filter(v => v.status === 'done' && (v.group || 'その他') === (video.group || 'その他')));
         videoSelect.innerHTML = '<option value="" disabled selected>動画を選択してください...</option>' +
           videos.map(v => `<option value="${v.key}">${v.name}</option>`).join('');
         videoSelect.value = key;
@@ -3900,10 +3912,10 @@ function renderVideosTable() {
   const filterSelect = document.getElementById('videoTableGroupFilter');
   const activeFilter = filterSelect ? filterSelect.value : 'all';
   
-  const filteredVideos = VIDEOS_DATA.filter(v => {
+  const filteredVideos = sortVideosNewestFirst(VIDEOS_DATA.filter(v => {
     if (v.hidden) return false;
     return activeFilter === 'all' || v.group === activeFilter;
-  });
+  }));
   
   if (filteredVideos.length === 0) {
     tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 30px;">該当する動画はありません</td></tr>`;
@@ -4223,12 +4235,10 @@ function handleVideosFileSelect(file) {
         filterSelect.value = 'all';
       }
 
-      // 見つけやすいように一覧の先頭へ移す
-      VIDEOS_DATA = [existingVideo, ...VIDEOS_DATA.filter(v => v.key !== existingVideo.key)];
-
+      // 一覧は登録の新しい順に並ぶので、既存の行は登録日の位置にある
       const nextAction = existingVideo.status === 'done'
         ? 'すでに分析済みです。やり直すなら「再分析」を押してください。'
-        : '一覧のいちばん上にあります。「🤖 分析」を押すと開始できます。';
+        : `一覧の登録日 ${existingVideo.date || ''} の行にあります。「🤖 分析」を押すと開始できます。`;
       showToast('📁', `「${file.name}」はすでに一覧にあります。ファイルを紐づけました。${nextAction}`);
 
       saveStateToLocalStorage();
@@ -4674,7 +4684,7 @@ function onDetailInterviewerChange() {
   if (!interviewerSelect || !videoSelect) return;
   
   const interviewer = interviewerSelect.value;
-  const videos = VIDEOS_DATA.filter(v => v.status === 'done' && (v.group || 'その他') === interviewer);
+  const videos = sortVideosNewestFirst(VIDEOS_DATA.filter(v => v.status === 'done' && (v.group || 'その他') === interviewer));
   
   videoSelect.innerHTML = '<option value="" disabled selected>動画を選択してください...</option>' +
     videos.map(v => `<option value="${v.key}">${v.name}</option>`).join('');
